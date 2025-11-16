@@ -13,7 +13,7 @@ export default function App() {
 const fetchData = async () => {
   setLoading(true);
   try {
-    const res = await axios.get('/api');  // Changed to /api
+    const res = await axios.get('/api/threats');  // Changed to /api
     setData(res.data);
   } catch (e) {
     console.error('Fetch error:', e);  // Better logging
