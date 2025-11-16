@@ -8,15 +8,20 @@ interface ZeroDay { cve: string; product: string; dateAdded: string; source: str
 export default function App() {
   const [data, setData] = useState<{ threats: Threat[]; zeroDays: ZeroDay[] }>({ threats: [], zeroDays: [] });
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('All');
+  const [severityFilter, setSeverityFilter] = useState('All');
+  const [typeFilter, setTypeFilter] = useState('All');
+  const [sourceFilter, setSourceFilter] = useState('All');
+  const [timeFilter, setTimeFilter] = useState('24h');
+  const [topCount, setTopCount] = useState(25);
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       const res = await axios.get('/api/threats');
-      console.log('API Response:', res.data);
-      console.log('Threat severities:', res.data.threats.map((t: Threat) => ({ id: t.id, severity: t.severity })));
       setData(res.data);
+      setLastUpdate(new Date());
     } catch (e) {
       console.error('Fetch error:', e);
       alert('Failed to load data');
@@ -30,23 +35,42 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  // Recalculate filtered threats whenever data or filter changes
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Get unique types and sources from data
+  const uniqueTypes = ['All', ...new Set(data.threats.map(t => t.type))];
+  const uniqueSources = ['All', ...new Set(data.threats.map(t => t.source))];
+
+  // Apply all filters
   const filtered = data.threats.filter(t => {
-    if (filter === 'All') return true;
-    return t.severity === filter;
-  });
+    // Severity filter
+    if (severityFilter !== 'All' && t.severity !== severityFilter) return false;
+    
+    // Type filter
+    if (typeFilter !== 'All' && t.type !== typeFilter) return false;
+    
+    // Source filter
+    if (sourceFilter !== 'All' && t.source !== sourceFilter) return false;
+    
+    // Time filter
+    const threatTime = new Date(t.lastSeen).getTime();
+    const now = Date.now();
+    const timeRanges: Record<string, number> = {
+      '1h': 3600000,
+      '6h': 21600000,
+      '24h': 86400000,
+      '7d': 604800000
+    };
+    if (now - threatTime > timeRanges[timeFilter]) return false;
+    
+    return true;
+  }).slice(0, topCount);
 
-  console.log('Current filter:', filter);
-  console.log('Total threats:', data.threats.length);
-  console.log('Filtered threats:', filtered.length);
-  console.log('Filter breakdown:', {
-    Critical: data.threats.filter((t: Threat) => t.severity === 'Critical').length,
-    High: data.threats.filter((t: Threat) => t.severity === 'High').length,
-    Medium: data.threats.filter((t: Threat) => t.severity === 'Medium').length,
-    Low: data.threats.filter((t: Threat) => t.severity === 'Low').length,
-  });
-
-  // Get severity badge styling
   const getSeverityStyle = (severity: string) => {
     switch (severity) {
       case 'Critical':
@@ -62,42 +86,165 @@ export default function App() {
     }
   };
 
+  const formatTimeEST = () => {
+    return currentTime.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
+  };
+
+  const formatDateEST = () => {
+    return currentTime.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+  };
+
+  const formatLastUpdate = () => {
+    if (!lastUpdate) return 'Never';
+    return lastUpdate.toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true
+    });
+  };
+
+  const getTimeUntilNextUpdate = () => {
+    if (!lastUpdate) return 'Soon';
+    const nextUpdate = new Date(lastUpdate.getTime() + 900000);
+    const diff = nextUpdate.getTime() - currentTime.getTime();
+    
+    if (diff <= 0) return 'Updating...';
+    
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    return `${minutes}m ${seconds}s`;
+  };
+
   if (loading) return <div className="p-8 text-center">Loading...</div>;
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
-      <h1 className="text-4xl font-bold mb-2">Hyperion Cyber Threat Intelligence</h1>
-      <p className="text-gray-400 mb-6">Free, real-time, zero-budget</p>
+      <div className="flex justify-between items-start mb-6">
+        <div>
+          <h1 className="text-4xl font-bold mb-2">Hyperion Cyber Threat Intelligence</h1>
+          <p className="text-gray-400">Free, real-time, zero-budget&nbsp;&nbsp;|&nbsp;&nbsp;Project by Omar Ahmadi</p>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-mono font-bold text-white">
+            {formatTimeEST()}
+          </div>
+          <div className="text-sm text-gray-400 mt-1">
+            {formatDateEST()} EST
+          </div>
+        </div>
+      </div>
 
-      <div className="flex gap-4 mb-6">
-        <select 
-          value={filter}
-          onChange={e => {
-            console.log('Filter changed to:', e.target.value);
-            setFilter(e.target.value);
-          }} 
-          className="p-2 bg-gray-800 rounded text-white border border-gray-700"
-        >
-          <option value="All">All Severities</option>
-          <option value="Critical">Critical</option>
-          <option value="High">High</option>
-          <option value="Medium">Medium</option>
-          <option value="Low">Low</option>
-        </select>
-        <button onClick={fetchData} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded transition">
-          Refresh
-        </button>
-        <div className="ml-auto text-sm text-gray-400 flex items-center">
-          Showing {filtered.length} of {data.threats.length} threats
+      {/* Filters Row */}
+      <div className="bg-gray-800 rounded-lg p-4 mb-6">
+        <div className="flex flex-wrap gap-4 items-center">
+          {/* Type Filter */}
+          <select 
+            value={typeFilter}
+            onChange={e => setTypeFilter(e.target.value)} 
+            className="px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+          >
+            {uniqueTypes.map(type => (
+              <option key={type} value={type}>
+                {type === 'All' ? 'All Types' : type.charAt(0).toUpperCase() + type.slice(1).replace('-', ' ')}
+              </option>
+            ))}
+          </select>
+
+          {/* Severity Filter */}
+          <select 
+            value={severityFilter}
+            onChange={e => setSeverityFilter(e.target.value)} 
+            className="px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+          >
+            <option value="All">All Severities</option>
+            <option value="Critical">Critical</option>
+            <option value="High">High</option>
+            <option value="Medium">Medium</option>
+            <option value="Low">Low</option>
+          </select>
+
+          {/* Source Filter */}
+          <select 
+            value={sourceFilter}
+            onChange={e => setSourceFilter(e.target.value)} 
+            className="px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+          >
+            {uniqueSources.map(source => (
+              <option key={source} value={source}>
+                {source === 'All' ? 'All Sources' : source}
+              </option>
+            ))}
+          </select>
+
+          {/* Time Filter */}
+          <div className="flex gap-1 bg-gray-700 rounded p-1">
+            {['1h', '6h', '24h', '7d'].map(time => (
+              <button
+                key={time}
+                onClick={() => setTimeFilter(time)}
+                className={`px-3 py-1 rounded text-sm transition ${
+                  timeFilter === time 
+                    ? 'bg-cyan-500 text-gray-900 font-semibold' 
+                    : 'text-gray-300 hover:text-white'
+                }`}
+              >
+                {time}
+              </button>
+            ))}
+          </div>
+
+          {/* Top Count Filter */}
+          <div className="flex gap-1 bg-gray-700 rounded p-1 ml-auto">
+            {[5, 10, 25].map(count => (
+              <button
+                key={count}
+                onClick={() => setTopCount(count)}
+                className={`px-3 py-1 rounded text-sm transition ${
+                  topCount === count 
+                    ? 'bg-white text-gray-900 font-semibold' 
+                    : 'text-gray-300 hover:text-white'
+                }`}
+              >
+                Top {count}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Refresh and Status Row */}
+        <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-700">
+          <button onClick={fetchData} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded transition text-sm">
+            Refresh Now
+          </button>
+          <div className="text-sm text-gray-400 flex flex-col items-end">
+            <div className="flex items-center gap-2">
+              <span>Auto-refresh in:</span>
+              <span className="font-mono text-gray-400">{getTimeUntilNextUpdate()}</span>
+            </div>
+            <div className="text-xs mt-1">Last updated: {formatLastUpdate()} EST</div>
+          </div>
         </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-8">
         <div>
-          <h2 className="text-2xl mb-4">Live Threat Feed (Top 25)</h2>
+          <h2 className="text-2xl mb-4">Live Threat Feed (Top {topCount})</h2>
           {filtered.length === 0 ? (
             <div className="p-4 bg-gray-800 rounded-lg text-gray-400">
-              No threats found matching the selected filter.
+              No threats found matching the selected filters.
             </div>
           ) : (
             filtered.map((t, index) => (

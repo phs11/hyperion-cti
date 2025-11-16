@@ -1,7 +1,11 @@
 // netlify/functions/get-threats.cjs
 const axios = require('axios');
 const Parser = require('rss-parser');
-const parser = new Parser();
+const parser = new Parser({
+  customFields: {
+    item: ['contentSnippet', 'content:encoded']
+  }
+});
 
 const OTX_KEY = process.env.OTX_API_KEY;
 const VT_KEY = process.env.VT_API_KEY;
@@ -16,6 +20,27 @@ if (!OTX_KEY || !VT_KEY || !ABUSEIPDB_KEY) {
   return;
 }
 
+// Decode HTML entities
+function decodeHtmlEntities(text) {
+  const entities = {
+    '&#8217;': "'",
+    '&#8216;': "'",
+    '&#8220;': '"',
+    '&#8221;': '"',
+    '&#8211;': '–',
+    '&#8212;': '—',
+    '&#x26;': '&',
+    '&#38;': '&',
+    '&quot;': '"',
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&apos;': "'"
+  };
+  
+  return text.replace(/&#?\w+;/g, match => entities[match] || match);
+}
+
 const RSS_FEEDS = [
   'https://www.wired.com/feed/category/security/latest/rss',
   'https://www.thehackernews.com/feeds/posts/default',
@@ -23,7 +48,10 @@ const RSS_FEEDS = [
   'https://threatpost.com/feed/',
   'https://krebsonsecurity.com/feed/atom/',
   'https://www.bleepingcomputer.com/feed/',
-  'https://feeds.feedburner.com/threatintelligence/pvexyqv7v0v'
+  'https://feeds.feedburner.com/threatintelligence/pvexyqv7v0v',
+  'https://www.cisa.gov/cybersecurity-advisories/all.xml',
+  'https://isc.sans.edu/rssfeed.xml',
+  'https://www.darkreading.com/rss.xml' 
 ];
 
 let cache = { threats: [], zeroDays: [], lastUpdate: 0 };
@@ -33,50 +61,59 @@ const CACHE_TTL = 15 * 60 * 1000;
 function classifyThreat(item) {
   const text = `${item.title} ${item.contentSnippet || ''}`.toLowerCase();
   
-  // Critical indicators - immediate, severe, widespread threats
+  // Critical indicators - ONLY truly severe, immediate threats
   const critical = [
-    'zero-day', 'zero day', 'actively exploited', 'active exploitation',
-    'ransomware', 'critical vulnerability', 'supply chain attack',
-    'apt', 'advanced persistent', 'nation-state', 'state-sponsored',
-    'wormable', 'mass exploitation'
+    'zero-day exploit', 'zero day exploit', 'actively exploited in the wild',
+    'ransomware attack', 'nation-state attack', 'supply chain compromise',
+    'wormable vulnerability', 'mass exploitation', 'critical rce'
   ];
   
-  // High severity indicators - serious threats requiring prompt action
+  // High severity indicators - serious threats, but more specific
   const high = [
-    'remote code execution', 'rce', 'privilege escalation',
-    'authentication bypass', 'sql injection', 'data breach',
-    'malware campaign', 'phishing campaign', 'botnet',
-    'credential theft', 'lateral movement', 'backdoor'
+    'remote code execution', 'unauthenticated rce',
+    'privilege escalation to root', 'authentication bypass vulnerability',
+    'sql injection vulnerability', 'major data breach',
+    'widespread malware campaign', 'critical patch released',
+    'actively exploited', 'exploit in the wild'
   ];
   
-  // Medium severity indicators - notable but contained threats
+  // Medium severity indicators - real threats but contained/patchable
   const medium = [
-    'vulnerability', 'exploit', 'malware', 'trojan',
-    'security flaw', 'unauthorized access', 'exposed database',
-    'misconfiguration', 'ddos', 'brute force', 'information disclosure'
+    'vulnerability disclosed', 'security flaw', 'exploit available',
+    'malware detected', 'trojan', 'phishing campaign',
+    'unauthorized access', 'security breach', 'ddos attack',
+    'botnet activity', 'credential theft', 'ransomware variant'
   ];
   
-  // Low severity indicators - awareness, patches, minor issues
+  // Low severity indicators - advisories, tips, general awareness
   const low = [
-    'patch', 'update available', 'advisory', 'disclosure',
-    'security tip', 'recommendation', 'best practice',
-    'awareness', 'warning', 'announcement', 'guidance',
-    'tutorial', 'how to protect', 'prevention'
+    'security update', 'patch available', 'advisory issued',
+    'security recommendation', 'best practice', 'how to protect',
+    'security tip', 'awareness campaign', 'warning issued',
+    'vulnerability patched', 'fix released'
   ];
   
-  // Check for critical
+  // Check for critical (requires exact phrase match for stricter classification)
   if (critical.some(keyword => text.includes(keyword))) {
     return 'Critical';
   }
   
-  // Check for high
+  // Check for high - but exclude if it's just about patches/fixes
   if (high.some(keyword => text.includes(keyword))) {
+    // Downgrade if it's about a patch being available
+    if (text.includes('patch') || text.includes('fix released') || text.includes('update available')) {
+      return 'Medium';
+    }
     return 'High';
   }
   
-  // Check for CVE mentions (usually high severity)
+  // Check for CVE mentions - Medium by default (not all CVEs are critical)
   if (text.match(/cve[-–]?\d{4}[-–]?\d{4,7}/i)) {
-    return 'High';
+    // Only High if explicitly mentioned as critical or actively exploited
+    if (text.includes('critical') || text.includes('actively exploited')) {
+      return 'High';
+    }
+    return 'Medium';
   }
   
   // Check for medium
@@ -89,7 +126,7 @@ function classifyThreat(item) {
     return 'Low';
   }
   
-  // If no indicators found, default to Low (likely informational)
+  // Default to Low for general news/informational content
   return 'Low';
 }
 
@@ -121,7 +158,7 @@ async function fetchData() {
       const feed = await parser.parseURL(url);
       const sourceName = feed.title?.split(' - ')[0] || url.split('/')[2];
       
-      feed.items.slice(0, 5).forEach(item => {
+      feed.items.slice(0, 10).forEach(item => {
         // Check for CVE (for zero-days)
         const cveMatch = item.title.match(/CVE[-–]?(\d{4}-\d{4,7})/i);
         if (cveMatch) {
@@ -141,7 +178,7 @@ async function fetchData() {
           id: `rss-${Buffer.from(item.link).toString('base64').slice(0, 10)}`,
           type: determineThreatType(item),
           severity: classifyThreat(item),
-          summary: item.title.slice(0, 150),
+          summary: decodeHtmlEntities(item.title.slice(0, 150)),
           lastSeen: new Date(item.pubDate || item.isoDate).toISOString(),
           sourceUrl: item.link,
           source: sourceName
@@ -183,29 +220,39 @@ async function fetchData() {
       const indicators = p.indicators || [];
       const hasIPs = indicators.some(i => i.type === 'IPv4' || i.type === 'IPv6');
       
-      // Classify based on tags and content
+      // Classify based on tags and content - more conservative
       let severity = 'Low';
       const tags = (p.tags || []).join(' ').toLowerCase();
       const description = (p.description || '').toLowerCase();
       const combined = `${tags} ${description} ${p.name}`.toLowerCase();
       
-      if (combined.includes('critical') || combined.includes('ransomware') || 
-          combined.includes('zero-day') || combined.includes('apt')) {
+      // Critical only for truly severe threats
+      if ((combined.includes('critical') && combined.includes('exploit')) ||
+          combined.includes('ransomware attack') || 
+          combined.includes('zero-day') || 
+          (combined.includes('apt') && combined.includes('campaign'))) {
         severity = 'Critical';
-      } else if (combined.includes('high') || combined.includes('exploit') || 
-                 combined.includes('malware') || hasIPs) {
+      } 
+      // High for serious active threats
+      else if ((combined.includes('exploit') && hasIPs) || 
+               (combined.includes('malware') && combined.includes('campaign')) ||
+               combined.includes('actively exploited')) {
         severity = 'High';
-      } else if (combined.includes('vulnerability') || combined.includes('threat') ||
-                 combined.includes('attack') || combined.includes('campaign')) {
+      } 
+      // Medium for vulnerabilities and general threats
+      else if (combined.includes('vulnerability') || 
+               combined.includes('malicious') ||
+               combined.includes('attack') || 
+               hasIPs) {
         severity = 'Medium';
       }
-      // Otherwise stays 'Low' for general advisories
+      // Otherwise stays 'Low' for general intel/advisories
 
       threats.push({
         id: p.id,
         type: p.tags[0] || 'malware',
         severity: severity,
-        summary: p.name,
+        summary: decodeHtmlEntities(p.name),
         lastSeen: p.modified,
         sourceUrl: `https://otx.alienvault.com/pulse/${p.id}`,
         source: 'OTX'
@@ -225,13 +272,10 @@ async function fetchData() {
     });
   }
 
-  // Sort threats by severity (Critical > High > Medium > Low) and date
-  const severityOrder = { 'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3 };
+  // Sort threats by date (most recent first), not severity
   const sortedThreats = threats
     .sort((a, b) => {
-      const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
-      if (severityDiff !== 0) return severityDiff;
-      return new Date(b.lastSeen) - new Date(a.lastSeen);
+      return new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime();
     })
     .slice(0, 25);
 
