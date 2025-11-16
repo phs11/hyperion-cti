@@ -29,7 +29,6 @@ Thumbs.db
 
 # Netlify
 .netlify/
-netlify.toml
 
 # Vite
 .vite/
