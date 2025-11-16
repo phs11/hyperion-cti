@@ -46,30 +46,36 @@ export default function App() {
   const uniqueTypes = ['All', ...new Set(data.threats.map(t => t.type))];
   const uniqueSources = ['All', ...new Set(data.threats.map(t => t.source))];
 
-  // Apply all filters
-  const filtered = data.threats.filter(t => {
-    // Severity filter
-    if (severityFilter !== 'All' && t.severity !== severityFilter) return false;
-    
-    // Type filter
-    if (typeFilter !== 'All' && t.type !== typeFilter) return false;
-    
-    // Source filter
-    if (sourceFilter !== 'All' && t.source !== sourceFilter) return false;
-    
-    // Time filter
-    const threatTime = new Date(t.lastSeen).getTime();
-    const now = Date.now();
-    const timeRanges: Record<string, number> = {
-      '1h': 3600000,
-      '6h': 21600000,
-      '24h': 86400000,
-      '7d': 604800000
-    };
-    if (now - threatTime > timeRanges[timeFilter]) return false;
-    
-    return true;
-  }).slice(0, topCount);
+  // Apply all filters and sort by date
+  const filtered = data.threats
+    .filter(t => {
+      // Severity filter
+      if (severityFilter !== 'All' && t.severity !== severityFilter) return false;
+      
+      // Type filter
+      if (typeFilter !== 'All' && t.type !== typeFilter) return false;
+      
+      // Source filter
+      if (sourceFilter !== 'All' && t.source !== sourceFilter) return false;
+      
+      // Time filter
+      const threatTime = new Date(t.lastSeen).getTime();
+      const now = Date.now();
+      const timeRanges: Record<string, number> = {
+        '1h': 3600000,
+        '6h': 21600000,
+        '24h': 86400000,
+        '7d': 604800000
+      };
+      if (now - threatTime > timeRanges[timeFilter]) return false;
+      
+      return true;
+    })
+    .sort((a, b) => {
+      // Sort by date, newest first
+      return new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime();
+    })
+    .slice(0, topCount);
 
   const getSeverityStyle = (severity: string) => {
     switch (severity) {

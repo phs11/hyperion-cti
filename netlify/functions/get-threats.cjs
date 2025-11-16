@@ -159,15 +159,32 @@ async function fetchData() {
       const sourceName = feed.title?.split(' - ')[0] || url.split('/')[2];
       
       feed.items.slice(0, 10).forEach(item => {
+        const title = item.title || '';
+        const content = item.contentSnippet || '';
+        const combinedText = `${title} ${content}`.toLowerCase();
+        
+        // Skip promotional/event content
+        const skipKeywords = ['virtual event', 'sale', 'meetup', 'meet up'];
+        if (skipKeywords.some(keyword => combinedText.includes(keyword))) {
+          return; // Skip this item
+        }
+        
+        // Skip items older than 7 days
+        const itemDate = new Date(item.pubDate || item.isoDate);
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+        if (itemDate < sevenDaysAgo) {
+          return; // Skip this item
+        }
+        
         // Check for CVE (for zero-days)
-        const cveMatch = item.title.match(/CVE[-–]?(\d{4}-\d{4,7})/i);
+        const cveMatch = title.match(/CVE[-–]?(\d{4}-\d{4,7})/i);
         if (cveMatch) {
           zeroDays.push({
             cve: `CVE-${cveMatch[1]}`,
-            product: item.title.includes('Microsoft') ? 'Microsoft' : 
-                     item.title.includes('Google') ? 'Google' :
-                     item.title.includes('Apple') ? 'Apple' : 'Unknown',
-            dateAdded: new Date(item.pubDate || item.isoDate).toISOString().split('T')[0],
+            product: title.includes('Microsoft') ? 'Microsoft' : 
+                     title.includes('Google') ? 'Google' :
+                     title.includes('Apple') ? 'Apple' : 'Unknown',
+            dateAdded: itemDate.toISOString().split('T')[0],
             source: sourceName,
             link: item.link
           });
@@ -178,8 +195,8 @@ async function fetchData() {
           id: `rss-${Buffer.from(item.link).toString('base64').slice(0, 10)}`,
           type: determineThreatType(item),
           severity: classifyThreat(item),
-          summary: decodeHtmlEntities(item.title.slice(0, 150)),
-          lastSeen: new Date(item.pubDate || item.isoDate).toISOString(),
+          summary: decodeHtmlEntities(title.slice(0, 150)),
+          lastSeen: itemDate.toISOString(),
           sourceUrl: item.link,
           source: sourceName
         });
