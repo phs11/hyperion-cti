@@ -33,3 +33,6 @@ netlify.toml
 
 # Vite
 .vite/
+
+.env
+.env.*
