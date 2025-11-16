@@ -1,12 +1,20 @@
-// netlify/functions/get-threats.js
-import axios from 'axios';
-import Parser from 'rss-parser';
-
+// netlify/functions/get-threats.cjs
+const axios = require('axios');
+const Parser = require('rss-parser');
 const parser = new Parser();
 
-const OTX_KEY = 'REMOVED';
-const VT_KEY = 'REMOVED';
-const ABUSEIPDB_KEY = 'REMOVED';
+const OTX_KEY = process.env.OTX_API_KEY;
+const VT_KEY = process.env.VT_API_KEY;
+const ABUSEIPDB_KEY = process.env.ABUSEIPDB_API_KEY;
+
+if (!OTX_KEY || !VT_KEY || !ABUSEIPDB_KEY) {
+  console.error('Missing API keys');
+  exports.handler = async () => ({
+    statusCode: 500,
+    body: JSON.stringify({ error: 'Missing API keys' })
+  });
+  return;
+}
 
 const RSS_FEEDS = [
   'https://www.wired.com/feed/category/security/latest/rss',
@@ -22,16 +30,14 @@ const RSS_FEEDS = [
 let cache = { threats: [], zeroDays: [], lastUpdate: 0 };
 const CACHE_TTL = 15 * 60 * 1000;
 
-export async function GET() {
+async function fetchData() {
   const now = Date.now();
-  if (cache.lastUpdate > now - CACHE_TTL) {
-    return new Response(JSON.stringify(cache), { headers: { 'Content-Type': 'application/json' } });
-  }
+  if (cache.lastUpdate > now - CACHE_TTL) return cache;
 
   const zeroDays = [];
   const threats = [];
 
-  // === ZERO-DAYS ===
+  // RSS + CISA KEV
   for (const url of RSS_FEEDS) {
     try {
       const feed = await parser.parseURL(url);
@@ -40,8 +46,7 @@ export async function GET() {
         if (match) {
           zeroDays.push({
             cve: `CVE-${match[1]}`,
-            product: item.title.includes('Microsoft') ? 'Microsoft' :
-                     item.title.includes('Google') ? 'Google' : 'Unknown',
+            product: item.title.includes('Microsoft') ? 'Microsoft' : 'Unknown',
             dateAdded: new Date(item.pubDate).toISOString().split('T')[0],
             source: feed.title.split(' - ')[0],
             link: item.link
@@ -51,7 +56,6 @@ export async function GET() {
     } catch (e) {}
   }
 
-  // CISA KEV
   try {
     const kev = await axios.get('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json');
     kev.data.vulnerabilities.slice(0, 15).forEach(v => {
@@ -69,14 +73,14 @@ export async function GET() {
     .sort((a, b) => b.dateAdded.localeCompare(a.dateAdded))
     .slice(0, 25);
 
-  // === THREATS ===
+  // Threats
   try {
     const otx = await axios.get('https://otx.alienvault.com/api/v1/pulses/subscribed?limit=10', {
       headers: { 'X-OTX-API-KEY': OTX_KEY }
     });
 
     for (const p of otx.data.results) {
-      const ip = '198.51.100.1'; // Enhance later
+      const ip = '198.51.100.1';
       const [vt, abuse] = await Promise.all([
         axios.get(`https://www.virustotal.com/api/v3/ip_addresses/${ip}`, { headers: { 'x-apikey': VT_KEY } }).catch(() => ({ data: { data: { attributes: { last_analysis_stats: { malicious: 0 } } } } })),
         axios.get(`https://api.abuseipdb.com/api/v2/check?ipAddress=${ip}&maxAgeInDays=7`, { headers: { Key: ABUSEIPDB_KEY } }).catch(() => ({ data: { data: { abuseConfidenceScore: 0 } } }))
@@ -95,10 +99,10 @@ export async function GET() {
     }
   } catch (e) {
     threats.push({
-      id: 'fallback',
+      id: 'mock',
       type: 'ransomware',
       severity: 'Critical',
-      summary: 'Simulated LockBit campaign',
+      summary: 'Simulated LockBit (fallback)',
       lastSeen: new Date().toISOString(),
       sourceUrl: '#',
       source: 'Mock'
@@ -106,7 +110,18 @@ export async function GET() {
   }
 
   cache = { threats: threats.slice(0, 25), zeroDays: uniqueZeroDays, lastUpdate: now };
-  return new Response(JSON.stringify(cache), {
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=900' }
-  });
+  return cache;
 }
+
+exports.handler = async () => {
+  try {
+    const data = await fetchData();
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    };
+  } catch (e) {
+    return { statusCode: 500, body: JSON.stringify({ error: 'Server error' }) };
+  }
+};

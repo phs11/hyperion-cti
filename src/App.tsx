@@ -10,16 +10,17 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState('All');
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const res = await axios.get('/api/threats');
-      setData(res.data);
-    } catch (e) {
-      alert('Failed to load data');
-    }
-    setLoading(false);
-  };
+const fetchData = async () => {
+  setLoading(true);
+  try {
+    const res = await axios.get('/api');  // Changed to /api
+    setData(res.data);
+  } catch (e) {
+    console.error('Fetch error:', e);  // Better logging
+    alert('Failed to load data');
+  }
+  setLoading(false);
+};
 
   useEffect(() => {
     fetchData();
