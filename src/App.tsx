@@ -131,105 +131,112 @@ export default function App() {
   if (loading) return <div className="p-8 text-center">Loading...</div>;
 
   return (
-    <div className="min-h-screen bg-gray-900 text-white p-6">
-      <div className="flex justify-between items-start mb-6">
+    <div className="min-h-screen bg-gray-900 text-white p-4 md:p-6">
+      {/* Header - Mobile Responsive */}
+      <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-6 gap-4">
         <div>
-          <h1 className="text-4xl font-bold mb-2">Hyperion Cyber Threat Intelligence</h1>
-          <p className="text-gray-400">Free, real-time, zero-budget&nbsp;&nbsp;|&nbsp;&nbsp;Project by Omar Ahmadi</p>
+          <h1 className="text-2xl md:text-4xl font-bold mb-2">Hyperion Cyber Threat Intelligence</h1>
+          <p className="text-sm md:text-base text-gray-400">Free, real-time, zero-budget&nbsp;&nbsp;|&nbsp;&nbsp;Project by Omar Ahmadi</p>
         </div>
-        <div className="text-right">
-          <div className="text-2xl font-mono font-bold text-white">
+        <div className="text-left md:text-right">
+          <div className="text-xl md:text-2xl font-mono font-bold text-white">
             {formatTimeEST()}
           </div>
-          <div className="text-sm text-gray-400 mt-1">
+          <div className="text-xs md:text-sm text-gray-400 mt-1">
             {formatDateEST()} EST
           </div>
         </div>
       </div>
 
-      {/* Filters Row */}
-      <div className="bg-gray-800 rounded-lg p-4 mb-6">
-        <div className="flex flex-wrap gap-4 items-center">
-          {/* Type Filter */}
-          <select 
-            value={typeFilter}
-            onChange={e => setTypeFilter(e.target.value)} 
-            className="px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
-          >
-            {uniqueTypes.map(type => (
-              <option key={type} value={type}>
-                {type === 'All' ? 'All Types' : type.charAt(0).toUpperCase() + type.slice(1).replace('-', ' ')}
-              </option>
-            ))}
-          </select>
+      {/* Filters - Mobile Responsive */}
+      <div className="bg-gray-800 rounded-lg p-3 md:p-4 mb-6">
+        <div className="flex flex-col gap-3">
+          {/* First Row: Dropdowns */}
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
+            {/* Type Filter */}
+            <select 
+              value={typeFilter}
+              onChange={e => setTypeFilter(e.target.value)} 
+              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+            >
+              {uniqueTypes.map(type => (
+                <option key={type} value={type}>
+                  {type === 'All' ? 'All Types' : type.charAt(0).toUpperCase() + type.slice(1).replace('-', ' ')}
+                </option>
+              ))}
+            </select>
 
-          {/* Severity Filter */}
-          <select 
-            value={severityFilter}
-            onChange={e => setSeverityFilter(e.target.value)} 
-            className="px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
-          >
-            <option value="All">All Severities</option>
-            <option value="Critical">Critical</option>
-            <option value="High">High</option>
-            <option value="Medium">Medium</option>
-            <option value="Low">Low</option>
-          </select>
+            {/* Severity Filter */}
+            <select 
+              value={severityFilter}
+              onChange={e => setSeverityFilter(e.target.value)} 
+              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+            >
+              <option value="All">All Severities</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
 
-          {/* Source Filter */}
-          <select 
-            value={sourceFilter}
-            onChange={e => setSourceFilter(e.target.value)} 
-            className="px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
-          >
-            {uniqueSources.map(source => (
-              <option key={source} value={source}>
-                {source === 'All' ? 'All Sources' : source}
-              </option>
-            ))}
-          </select>
-
-          {/* Time Filter */}
-          <div className="flex gap-1 bg-gray-700 rounded p-1">
-            {['1h', '6h', '24h', '7d'].map(time => (
-              <button
-                key={time}
-                onClick={() => setTimeFilter(time)}
-                className={`px-3 py-1 rounded text-sm transition ${
-                  timeFilter === time 
-                    ? 'bg-cyan-500 text-gray-900 font-semibold' 
-                    : 'text-gray-300 hover:text-white'
-                }`}
-              >
-                {time}
-              </button>
-            ))}
+            {/* Source Filter */}
+            <select 
+              value={sourceFilter}
+              onChange={e => setSourceFilter(e.target.value)} 
+              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+            >
+              {uniqueSources.map(source => (
+                <option key={source} value={source}>
+                  {source === 'All' ? 'All Sources' : source}
+                </option>
+              ))}
+            </select>
           </div>
 
-          {/* Top Count Filter */}
-          <div className="flex gap-1 bg-gray-700 rounded p-1 ml-auto">
-            {[5, 10, 25].map(count => (
-              <button
-                key={count}
-                onClick={() => setTopCount(count)}
-                className={`px-3 py-1 rounded text-sm transition ${
-                  topCount === count 
-                    ? 'bg-white text-gray-900 font-semibold' 
-                    : 'text-gray-300 hover:text-white'
-                }`}
-              >
-                Top {count}
-              </button>
-            ))}
+          {/* Second Row: Time and Top Count Filters */}
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 sm:justify-between">
+            {/* Time Filter */}
+            <div className="flex gap-1 bg-gray-700 rounded p-1">
+              {['1h', '6h', '24h', '7d'].map(time => (
+                <button
+                  key={time}
+                  onClick={() => setTimeFilter(time)}
+                  className={`flex-1 px-2 sm:px-3 py-1 rounded text-xs sm:text-sm transition ${
+                    timeFilter === time 
+                      ? 'bg-cyan-500 text-gray-900 font-semibold' 
+                      : 'text-gray-300 hover:text-white'
+                  }`}
+                >
+                  {time}
+                </button>
+              ))}
+            </div>
+
+            {/* Top Count Filter */}
+            <div className="flex gap-1 bg-gray-700 rounded p-1">
+              {[5, 10, 25].map(count => (
+                <button
+                  key={count}
+                  onClick={() => setTopCount(count)}
+                  className={`flex-1 px-2 sm:px-3 py-1 rounded text-xs sm:text-sm transition ${
+                    topCount === count 
+                      ? 'bg-white text-gray-900 font-semibold' 
+                      : 'text-gray-300 hover:text-white'
+                  }`}
+                >
+                  Top {count}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
         {/* Refresh and Status Row */}
-        <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-700">
-          <button onClick={fetchData} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded transition text-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mt-4 pt-4 border-t border-gray-700 gap-3">
+          <button onClick={fetchData} className="w-full sm:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded transition text-sm">
             Refresh Now
           </button>
-          <div className="text-sm text-gray-400 flex flex-col items-end">
+          <div className="text-xs sm:text-sm text-gray-400 flex flex-col items-start sm:items-end">
             <div className="flex items-center gap-2">
               <span>Auto-refresh in:</span>
               <span className="font-mono text-gray-400">{getTimeUntilNextUpdate()}</span>
