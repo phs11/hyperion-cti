@@ -18,12 +18,12 @@ if (!OTX_KEY || !VT_KEY || !ABUSEIPDB_KEY) {
 
 const RSS_FEEDS = [
   'https://www.wired.com/feed/category/security/latest/rss',
-  'http://www.thehackernews.com/feeds/posts/default',
-  'http://www.zdnet.com/topic/security/rss.xml',
-  'http://feeds.arstechnica.com/arstechnica/index/',
-  'http://threatpost.com/feed/',
-  'http://krebsonsecurity.com/feed/atom/',
-  'http://www.bleepingcomputer.com/feed/',
+  'https://www.thehackernews.com/feeds/posts/default',
+  'https://www.zdnet.com/topic/security/rss.xml',
+  'https://feeds.arstechnica.com/arstechnica/index/',
+  'https://threatpost.com/feed/',
+  'https://krebsonsecurity.com/feed/atom/',
+  'https://www.bleepingcomputer.com/feed/',
   'https://feeds.feedburner.com/threatintelligence/pvexyqv7v0v'
 ];
 
