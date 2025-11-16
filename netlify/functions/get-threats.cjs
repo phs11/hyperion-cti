@@ -225,7 +225,7 @@ function extractFirstIP(indicators) {
     console.log(`  [${idx}] type: "${ind.type}", indicator: "${ind.indicator}"`);
   });
   
-  // Try multiple type variations (OTX API can return different formats)
+  // Strategy 1: Try to find by type field
   const ipIndicator = indicators.find(i => 
     i.type === 'IPv4' || 
     i.type === 'IPV4' || 
@@ -235,8 +235,17 @@ function extractFirstIP(indicators) {
   );
   
   if (ipIndicator) {
-    console.log(`[IP Extract] Found IP: ${ipIndicator.indicator} (type: ${ipIndicator.type})`);
+    console.log(`[IP Extract] Found IP via type: ${ipIndicator.indicator} (type: ${ipIndicator.type})`);
     return ipIndicator.indicator;
+  }
+  
+  // Strategy 2: Regex search through all indicators for IPv4 pattern
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  for (const ind of indicators) {
+    if (ind.indicator && ipv4Regex.test(ind.indicator)) {
+      console.log(`[IP Extract] Found IP via regex: ${ind.indicator} (type: ${ind.type})`);
+      return ind.indicator;
+    }
   }
   
   console.log('[IP Extract] No IPv4 indicator found');
@@ -487,6 +496,18 @@ async function fetchData() {
 exports.handler = async () => {
   try {
     const data = await fetchData();
+    
+    // Add diagnostics to response (temporary for debugging)
+    const diagnostics = {
+      totalThreats: data.threats.length,
+      otxThreats: data.threats.filter(t => t.source === 'OTX').length,
+      mispThreats: data.threats.filter(t => t.source === 'MISP Feed').length,
+      enrichedIPs: Object.keys(data.ipEnrichmentCache).length,
+      ipCache: data.ipEnrichmentCache
+    };
+    
+    console.log('[DIAGNOSTICS]', JSON.stringify(diagnostics));
+    
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json' },
