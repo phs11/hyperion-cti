@@ -268,7 +268,7 @@ export default function App() {
                     {t.severity}
                   </span>
                 </div>
-                <p className="text-sm mt-2 text-gray-300">{t.summary}</p>
+                <p className="text-sm mt-2 text-gray-300 break-words">{t.summary}</p>
                 <div className="flex justify-between items-center mt-3">
                   <p className="text-xs text-gray-400">
                     {formatDistanceToNow(new Date(t.lastSeen))} ago
