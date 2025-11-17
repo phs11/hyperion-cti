@@ -28,12 +28,25 @@ if (!OTX_KEY || !VT_KEY || !ABUSEIPDB_KEY) {
 
 // Decode HTML entities
 function decodeHtmlEntities(text) {
+  if (!text) return '';
+  
   const entities = {
     '&#8217;': "'", '&#8216;': "'", '&#8220;': '"', '&#8221;': '"',
     '&#8211;': '–', '&#8212;': '—', '&#x26;': '&', '&#38;': '&',
+    '&#xa;': ' ', '&#10;': ' ', '&#xA;': ' ', // Multiple case variations
     '&quot;': '"', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&apos;': "'"
   };
-  return text.replace(/&#?\w+;/g, match => entities[match] || match);
+  
+  // Replace entities (case-insensitive for hex codes)
+  let decoded = text.replace(/&#?[xX]?[0-9a-fA-F]+;/g, match => {
+    const lower = match.toLowerCase();
+    return entities[lower] || entities[match] || match;
+  });
+  
+  // Clean up multiple spaces
+  decoded = decoded.replace(/\s+/g, ' ').trim();
+  
+  return decoded;
 }
 
 const RSS_FEEDS = [
@@ -265,11 +278,17 @@ function parseTxtFeed(data) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     
+    // Split by whitespace and take first token
     const tokens = trimmed.split(/\s+/);
-    const ioc = tokens[0];
+    let ioc = tokens[0];
     
-    // Validate: IPv4 or domain
-    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(ioc) || /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(ioc)) {
+    // For DShield format (IP#reliability#tags#desc), extract just the IP
+    if (ioc.includes('#')) {
+      ioc = ioc.split('#')[0];
+    }
+    
+    // Validate: IPv4 (with optional CIDR), IPv4 range, or domain
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\/\d{1,2})?$/.test(ioc) || /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(ioc)) {
       iocs.push(ioc);
     }
     
@@ -351,7 +370,7 @@ async function fetchData() {
           id: `rss-${Buffer.from(item.link).toString('base64').slice(0, 10)}`,
           type: determineThreatType(item),
           severity: classifyThreat(item),
-          summary: decodeHtmlEntities(title.slice(0, 150)),
+          summary: decodeHtmlEntities((title || '').slice(0, 150)),
           lastSeen: itemDate.toISOString(),
           sourceUrl: item.link,
           source: sourceName
