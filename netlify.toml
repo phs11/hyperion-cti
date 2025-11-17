@@ -17,3 +17,6 @@
   to = "/.netlify/functions/get-threats"
   status = 200
   force = true
+
+[build.environment]
+  NETLIFY_EXPERIMENTAL_WARM_LAMBDA = "true"
