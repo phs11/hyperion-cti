@@ -217,37 +217,41 @@ function extractFirstIP(indicators) {
     console.log('[IP Extract] No indicators array');
     return null;
   }
-  
+
   console.log(`[IP Extract] Checking ${indicators.length} indicators`);
-  
-  // Log first few indicator types for debugging
+
+  // Log first few for debugging
   indicators.slice(0, 5).forEach((ind, idx) => {
     console.log(`  [${idx}] type: "${ind.type}", indicator: "${ind.indicator}"`);
   });
-  
-  // Strategy 1: Try to find by type field
+
+  // === STRATEGY 1: Match known OTX IPv4 types (case-insensitive) ===
+  const ipTypes = ['IPv4', 'IPV4', 'ip', 'IP', 'IPv4 Address', 'ip-dst', 'ip-src'];
   const ipIndicator = indicators.find(i => 
-    i.type === 'IPv4' || 
-    i.type === 'IPV4' || 
-    i.type === 'ip' || 
-    i.type === 'IP' ||
-    (i.type && i.type.toLowerCase() === 'ipv4')
+    i.type && ipTypes.some(t => i.type.toLowerCase() === t.toLowerCase())
   );
-  
-  if (ipIndicator) {
-    console.log(`[IP Extract] Found IP via type: ${ipIndicator.indicator} (type: ${ipIndicator.type})`);
-    return ipIndicator.indicator;
-  }
-  
-  // Strategy 2: Regex search through all indicators for IPv4 pattern
-  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
-  for (const ind of indicators) {
-    if (ind.indicator && ipv4Regex.test(ind.indicator)) {
-      console.log(`[IP Extract] Found IP via regex: ${ind.indicator} (type: ${ind.type})`);
-      return ind.indicator;
+
+  if (ipIndicator && ipIndicator.indicator) {
+    const ip = ipIndicator.indicator.trim();
+    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
+      console.log(`[IP Extract] Found IP via type: ${ip} (type: ${ipIndicator.type})`);
+      return ip;
     }
   }
-  
+
+  // === STRATEGY 2: Regex scan all indicator strings ===
+  const ipv4Regex = /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/;
+  for (const ind of indicators) {
+    if (ind.indicator) {
+      const match = ind.indicator.match(ipv4Regex);
+      if (match) {
+        const ip = match[1];
+        console.log(`[IP Extract] Found IP via regex: ${ip} (type: ${ind.type})`);
+        return ip;
+      }
+    }
+  }
+
   console.log('[IP Extract] No IPv4 indicator found');
   return null;
 }
@@ -396,22 +400,19 @@ async function fetchData() {
       console.log(`[OTX] Extracted IP: ${ip || 'none'}`);
       
       let enrichment = '';
-      let severity = 'Low';
-      
+      let severity = 'Medium'; // default
+
       if (ip && !seenIOCs.has(ip)) {
         seenIOCs.add(ip);
         console.log(`[OTX] Enriching IP: ${ip}`);
         
-        // Enrich with VT and AbuseIPDB (parallel with error handling)
         const [vtMalicious, abuseScore] = await Promise.all([
           getVTData(ip),
           getAbuseIPDBData(ip)
         ]);
         
         enrichment = ` | ${ip} | VT: ${vtMalicious} malicious | Abuse: ${abuseScore}%`;
-        console.log(`[OTX] Enrichment complete: ${enrichment}`);
         
-        // Set severity based on enrichment
         if (abuseScore > 80 || vtMalicious > 10) {
           severity = 'Critical';
         } else if (abuseScore > 50 || vtMalicious > 3) {
@@ -419,16 +420,13 @@ async function fetchData() {
         } else {
           severity = 'Medium';
         }
-      } else if (!ip) {
-        // Fallback mock data if no IP
-        enrichment = ' | 198.51.100.1 | VT: 0 | Abuse: 0%';
-        severity = 'Medium';
-        console.log(`[OTX] No IP found, using mock data`);
       } else {
-        console.log(`[OTX] IP ${ip} already seen, skipping`);
+        // No IP or already seen → no enrichment
+        enrichment = '';
+        console.log(`[OTX] No IPv4 found or already enriched — skipping`);
       }
-      
-      // Override severity if tags suggest higher priority
+
+      // Override severity from tags/description (zero-day, ransomware, etc.)
       const tags = (p.tags || []).join(' ').toLowerCase();
       const description = (p.description || '').toLowerCase();
       const combined = `${tags} ${description} ${p.name}`.toLowerCase();
