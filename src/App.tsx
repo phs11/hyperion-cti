@@ -157,7 +157,7 @@ export default function App() {
                 <p className="text-sm mt-2 text-gray-300 break-words">{t.summary}</p>
                 <div className="flex justify-between items-center mt-3">
                   <p className="text-xs text-gray-400">{formatDistanceToNow(new Date(t.lastSeen))} ago</p>
-                  <a href={t.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 text-xs font-medium">{t.source} to</a>
+                  <a href={t.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 text-xs font-medium">{t.source} →</a>
                 </div>
               </div>
             ))
