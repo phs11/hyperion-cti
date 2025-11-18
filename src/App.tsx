@@ -8,6 +8,7 @@ interface ZeroDay { cve: string; product: string; dateAdded: string; source: str
 export default function App() {
   const [data, setData] = useState<{ threats: Threat[]; zeroDays: ZeroDay[] }>({ threats: [], zeroDays: [] });
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [severityFilter, setSeverityFilter] = useState('All');
   const [typeFilter, setTypeFilter] = useState('All');
   const [sourceFilter, setSourceFilter] = useState('All');
@@ -18,22 +19,32 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = async (isManualRefresh = false) => {
+    // Only block UI on initial load, not on refreshes
+    if (data.threats.length === 0) {
+      setLoading(true);
+    } else {
+      setIsRefreshing(true);
+    }
+    
     try {
       const res = await axios.get('/api/threats');
       setData(res.data);
       setLastUpdate(new Date());
     } catch (e) {
       console.error('Fetch error:', e);
-      alert('Failed to load data');
+      if (isManualRefresh) {
+        alert('Failed to load data');
+      }
     }
+    
     setLoading(false);
+    setIsRefreshing(false);
   };
 
   useEffect(() => {
     fetchData();
-    const id = setInterval(fetchData, 900000);
+    const id = setInterval(() => fetchData(false), 900000);
     return () => clearInterval(id);
   }, []);
 
@@ -60,16 +71,10 @@ export default function App() {
   // Apply all filters and sort by date (before pagination)
   const allFilteredThreats = data.threats
     .filter(t => {
-      // Severity filter
       if (severityFilter !== 'All' && t.severity !== severityFilter) return false;
-      
-      // Type filter
       if (typeFilter !== 'All' && t.type !== typeFilter) return false;
-      
-      // Source filter
       if (sourceFilter !== 'All' && t.source !== sourceFilter) return false;
       
-      // Time filter
       const threatTime = new Date(t.lastSeen).getTime();
       const now = Date.now();
       const timeRanges: Record<string, number> = {
@@ -82,10 +87,7 @@ export default function App() {
       
       return true;
     })
-    .sort((a, b) => {
-      // Sort by date, newest first
-      return new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime();
-    });
+    .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime());
 
   // Pagination for threats
   const totalThreatsPages = Math.ceil(allFilteredThreats.length / topCount);
@@ -156,6 +158,34 @@ export default function App() {
     return `${minutes}m ${seconds}s`;
   };
 
+  // Skeleton Loader Components
+  const ThreatCardSkeleton = () => (
+    <div className="p-4 mb-3 bg-gray-800 rounded-lg animate-pulse">
+      <div className="flex justify-between items-start mb-3">
+        <div className="h-5 bg-gray-700 rounded w-32"></div>
+        <div className="h-6 bg-gray-700 rounded-full w-20"></div>
+      </div>
+      <div className="space-y-2">
+        <div className="h-4 bg-gray-700 rounded w-full"></div>
+        <div className="h-4 bg-gray-700 rounded w-5/6"></div>
+      </div>
+      <div className="flex justify-between items-center mt-3">
+        <div className="h-3 bg-gray-700 rounded w-24"></div>
+        <div className="h-3 bg-gray-700 rounded w-20"></div>
+      </div>
+    </div>
+  );
+
+  const TableRowSkeleton = () => (
+    <tr className="border-b border-gray-800 animate-pulse">
+      <td className="p-2"><div className="h-4 bg-gray-700 rounded w-32"></div></td>
+      <td className="p-2"><div className="h-4 bg-gray-700 rounded w-24"></div></td>
+      <td className="p-2"><div className="h-6 bg-gray-700 rounded w-12"></div></td>
+      <td className="p-2"><div className="h-4 bg-gray-700 rounded w-20"></div></td>
+      <td className="p-2"><div className="h-4 bg-gray-700 rounded w-16"></div></td>
+    </tr>
+  );
+
   // Pagination component
   const PaginationControls = ({ 
     currentPage, 
@@ -170,12 +200,11 @@ export default function App() {
 
     const getPageNumbers = () => {
       const pages = [];
-      const showPages = 5; // Number of page buttons to show
+      const showPages = 5;
       
       let startPage = Math.max(1, currentPage - Math.floor(showPages / 2));
       let endPage = Math.min(totalPages, startPage + showPages - 1);
       
-      // Adjust start if we're near the end
       if (endPage - startPage < showPages - 1) {
         startPage = Math.max(1, endPage - showPages + 1);
       }
@@ -252,11 +281,9 @@ export default function App() {
     );
   };
 
-  if (loading) return <div className="p-8 text-center">Loading...</div>;
-
   return (
     <div className="min-h-screen bg-gray-900 text-white p-4 md:p-6">
-      {/* Header - Mobile Responsive */}
+      {/* Header - Always Visible */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-start mb-6 gap-4">
         <div>
           <h1 className="text-2xl md:text-4xl font-bold mb-2">Hyperion Cyber Threat Intelligence</h1>
@@ -272,16 +299,16 @@ export default function App() {
         </div>
       </div>
 
-      {/* Filters - Mobile Responsive */}
+      {/* Filters - Always Visible, Disabled During Initial Load */}
       <div className="bg-gray-800 rounded-lg p-3 md:p-4 mb-6">
         <div className="flex flex-col gap-3">
           {/* First Row: Dropdowns */}
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
-            {/* Type Filter */}
             <select 
               value={typeFilter}
-              onChange={e => setTypeFilter(e.target.value)} 
-              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+              onChange={e => setTypeFilter(e.target.value)}
+              disabled={loading}
+              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {uniqueTypes.map(type => (
                 <option key={type} value={type}>
@@ -290,11 +317,11 @@ export default function App() {
               ))}
             </select>
 
-            {/* Severity Filter */}
             <select 
               value={severityFilter}
-              onChange={e => setSeverityFilter(e.target.value)} 
-              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+              onChange={e => setSeverityFilter(e.target.value)}
+              disabled={loading}
+              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="All">All Severities</option>
               <option value="Critical">Critical</option>
@@ -303,11 +330,11 @@ export default function App() {
               <option value="Low">Low</option>
             </select>
 
-            {/* Source Filter */}
             <select 
               value={sourceFilter}
-              onChange={e => setSourceFilter(e.target.value)} 
-              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm"
+              onChange={e => setSourceFilter(e.target.value)}
+              disabled={loading}
+              className="flex-1 px-3 py-2 bg-gray-700 rounded text-white border border-gray-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {uniqueSources.map(source => (
                 <option key={source} value={source}>
@@ -319,13 +346,13 @@ export default function App() {
 
           {/* Second Row: Time and Top Count Filters */}
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 sm:justify-between">
-            {/* Time Filter */}
             <div className="flex gap-1 bg-gray-700 rounded p-1">
               {['1h', '6h', '24h', '7d'].map(time => (
                 <button
                   key={time}
                   onClick={() => setTimeFilter(time)}
-                  className={`flex-1 px-2 sm:px-3 py-1 rounded text-xs sm:text-sm transition ${
+                  disabled={loading}
+                  className={`flex-1 px-2 sm:px-3 py-1 rounded text-xs sm:text-sm transition disabled:opacity-50 disabled:cursor-not-allowed ${
                     timeFilter === time 
                       ? 'bg-cyan-500 text-gray-900 font-semibold' 
                       : 'text-gray-300 hover:text-white'
@@ -336,13 +363,13 @@ export default function App() {
               ))}
             </div>
 
-            {/* Top Count Filter */}
             <div className="flex gap-1 bg-gray-700 rounded p-1">
               {[5, 10, 25].map(count => (
                 <button
                   key={count}
                   onClick={() => setTopCount(count)}
-                  className={`flex-1 px-2 sm:px-3 py-1 rounded text-xs sm:text-sm transition ${
+                  disabled={loading}
+                  className={`flex-1 px-2 sm:px-3 py-1 rounded text-xs sm:text-sm transition disabled:opacity-50 disabled:cursor-not-allowed ${
                     topCount === count 
                       ? 'bg-white text-gray-900 font-semibold' 
                       : 'text-gray-300 hover:text-white'
@@ -357,8 +384,12 @@ export default function App() {
 
         {/* Refresh and Status Row */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mt-4 pt-4 border-t border-gray-700 gap-3">
-          <button onClick={fetchData} className="w-full sm:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded transition text-sm">
-            Refresh Now
+          <button 
+            onClick={() => fetchData(true)} 
+            disabled={loading || isRefreshing}
+            className="w-full sm:w-auto px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded transition text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isRefreshing ? 'Refreshing...' : 'Refresh Now'}
           </button>
           <div className="text-xs sm:text-sm text-gray-400 flex flex-col items-start sm:items-end">
             <div className="flex items-center gap-2">
@@ -371,14 +402,32 @@ export default function App() {
       </div>
 
       <div className="grid lg:grid-cols-2 gap-8">
+        {/* Threat Feed Section */}
         <div>
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-2xl">Live Threat Feed</h2>
-            <span className="text-sm text-gray-400">
-              {allFilteredThreats.length} total threats
-            </span>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl">Live Threat Feed</h2>
+              {isRefreshing && (
+                <span className="px-2 py-1 bg-cyan-500/20 text-cyan-400 text-xs rounded-full animate-pulse">
+                  Updating...
+                </span>
+              )}
+            </div>
+            {!loading && (
+              <span className="text-sm text-gray-400">
+                {allFilteredThreats.length} total threats
+              </span>
+            )}
           </div>
-          {paginatedThreats.length === 0 ? (
+          
+          {loading ? (
+            // Show skeleton loaders during initial load
+            <>
+              {[...Array(5)].map((_, i) => (
+                <ThreatCardSkeleton key={i} />
+              ))}
+            </>
+          ) : paginatedThreats.length === 0 ? (
             <div className="p-4 bg-gray-800 rounded-lg text-gray-400">
               No threats found matching the selected filters.
             </div>
@@ -418,13 +467,24 @@ export default function App() {
           )}
         </div>
 
+        {/* Zero-Days CVE Section */}
         <div>
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-2xl">Exploited Zero-Days</h2>
-            <span className="text-sm text-gray-400">
-              {data.zeroDays.length} total CVEs
-            </span>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl">Exploited Zero-Days</h2>
+              {isRefreshing && (
+                <span className="px-2 py-1 bg-cyan-500/20 text-cyan-400 text-xs rounded-full animate-pulse">
+                  Updating...
+                </span>
+              )}
+            </div>
+            {!loading && (
+              <span className="text-sm text-gray-400">
+                {data.zeroDays.length} total CVEs
+              </span>
+            )}
           </div>
+          
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="border-b border-gray-700">
@@ -437,44 +497,55 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {paginatedZeroDays.map(z => (
-                  <tr key={z.cve} className="border-b border-gray-800 hover:bg-gray-800 transition">
-                    <td className="p-2">
-                      <a 
-                        href={z.link} 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-blue-400 hover:text-blue-300 font-mono"
-                      >
-                        {z.cve}
-                      </a>
-                    </td>
-                    <td className="p-2">{z.product}</td>
-                    <td className="p-2">
-                      {z.cvssScore && (
-                        <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
-                          parseFloat(z.cvssScore) >= 9 ? 'bg-red-600 text-white' :
-                          parseFloat(z.cvssScore) >= 7 ? 'bg-orange-600 text-white' :
-                          parseFloat(z.cvssScore) >= 4 ? 'bg-yellow-500 text-gray-900' :
-                          'bg-green-600 text-white'
-                        }`}>
-                          {z.cvssScore}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-gray-400">{z.dateAdded}</td>
-                    <td className="p-2 text-xs text-gray-500">{z.source}</td>
-                  </tr>
-                ))}
+                {loading ? (
+                  // Show skeleton loaders during initial load
+                  [...Array(10)].map((_, i) => (
+                    <TableRowSkeleton key={i} />
+                  ))
+                ) : (
+                  paginatedZeroDays.map(z => (
+                    <tr key={z.cve} className="border-b border-gray-800 hover:bg-gray-800 transition">
+                      <td className="p-2">
+                        <a 
+                          href={z.link} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-blue-400 hover:text-blue-300 font-mono"
+                        >
+                          {z.cve}
+                        </a>
+                      </td>
+                      <td className="p-2">{z.product}</td>
+                      <td className="p-2">
+                        {z.cvssScore ? (
+                          <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                            parseFloat(z.cvssScore) >= 9 ? 'bg-red-600 text-white' :
+                            parseFloat(z.cvssScore) >= 7 ? 'bg-orange-600 text-white' :
+                            parseFloat(z.cvssScore) >= 4 ? 'bg-yellow-500 text-gray-900' :
+                            'bg-green-600 text-white'
+                          }`}>
+                            {z.cvssScore}
+                          </span>
+                        ) : (
+                          <span className="text-gray-500 text-xs">N/A</span>
+                        )}
+                      </td>
+                      <td className="p-2 text-gray-400">{z.dateAdded}</td>
+                      <td className="p-2 text-xs text-gray-500">{z.source}</td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
           
-          <PaginationControls 
-            currentPage={currentPageZeroDays}
-            totalPages={totalZeroDaysPages}
-            onPageChange={setCurrentPageZeroDays}
-          />
+          {!loading && (
+            <PaginationControls 
+              currentPage={currentPageZeroDays}
+              totalPages={totalZeroDaysPages}
+              onPageChange={setCurrentPageZeroDays}
+            />
+          )}
         </div>
       </div>
     </div>
