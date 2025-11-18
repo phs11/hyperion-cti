@@ -12,6 +12,9 @@
   port = 8888
   functions = "netlify/functions"
 
+[context.dev.environment]
+  NVD_API_KEY = "5e0fcab5-8993-4912-927a-1b6128fbc755"  
+
 [[redirects]]
   from = "/api/threats"
   to = "/.netlify/functions/get-threats"

@@ -10,15 +10,17 @@ const parser = new Parser({
 const OTX_KEY = process.env.OTX_API_KEY;
 const VT_KEY = process.env.VT_API_KEY;
 const ABUSEIPDB_KEY = process.env.ABUSEIPDB_API_KEY;
+const NVD_API_KEY = process.env.NVD_API_KEY;
 
 // Validate API keys
 console.log('[INIT] API Key Status:');
 console.log(`  OTX: ${OTX_KEY ? 'Present (' + OTX_KEY.substring(0, 8) + '...)' : 'MISSING'}`);
 console.log(`  VT: ${VT_KEY ? 'Present (' + VT_KEY.substring(0, 8) + '...)' : 'MISSING'}`);
 console.log(`  AbuseIPDB: ${ABUSEIPDB_KEY ? 'Present (' + ABUSEIPDB_KEY.substring(0, 8) + '...)' : 'MISSING'}`);
+console.log(`  NVD: ${NVD_API_KEY ? 'Present (' + NVD_API_KEY.substring(0, 8) + '...)' : 'Not set (using public API)'}`);
 
-if (!OTX_KEY || !VT_KEY || !ABUSEIPDB_KEY) {
-  console.error('[INIT] Missing API keys - cannot proceed');
+if (!OTX_KEY) {
+  console.error('[INIT] Missing required OTX API key - cannot proceed');
   exports.handler = async () => ({
     statusCode: 500,
     body: JSON.stringify({ error: 'Missing API keys' })
@@ -79,6 +81,103 @@ function extractProductFromDescription(description, cveId = '') {
   return 'Unknown';
 }
 
+// ========================================
+// NEW: Universal CVSS Score Lookup (OPTIMIZED)
+// ========================================
+let cvssCache = {}; // Cache CVSS scores to avoid repeated API calls
+let lastNVDCall = 0;
+const NVD_RATE_LIMIT_DELAY = NVD_API_KEY ? 600 : 6000; // 0.6s with key, 6s without (public API is 5 req/30s)
+const MAX_CVSS_FETCHES = NVD_API_KEY ? 25 : 5; // Fetch all 25 with API key, limit to 5 without
+
+async function getCVSSScore(cveId, skipIfNotCached = false) {
+  // Check cache first
+  if (cvssCache[cveId] !== undefined) {
+    return cvssCache[cveId];
+  }
+
+  // If skipIfNotCached is true, don't fetch - just return null
+  if (skipIfNotCached) {
+    return null;
+  }
+
+  // Rate limiting for NVD API
+  const now = Date.now();
+  const timeSinceLastCall = now - lastNVDCall;
+  if (timeSinceLastCall < NVD_RATE_LIMIT_DELAY) {
+    const waitTime = NVD_RATE_LIMIT_DELAY - timeSinceLastCall;
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+  }
+
+  try {
+    lastNVDCall = Date.now();
+    
+    const headers = { 'User-Agent': 'Hyperion-CTI-Dashboard/1.0' };
+    if (NVD_API_KEY) {
+      headers['apiKey'] = NVD_API_KEY;
+    }
+    
+    const response = await axios.get(`https://services.nvd.nist.gov/rest/json/cves/2.0`, {
+      params: { cveId: cveId },
+      headers: headers,
+      timeout: 8000
+    });
+
+    if (response.data?.vulnerabilities?.[0]) {
+      const vuln = response.data.vulnerabilities[0];
+      const metrics = vuln.cve?.metrics?.cvssMetricV31?.[0] || vuln.cve?.metrics?.cvssMetricV30?.[0];
+      const cvssScore = metrics?.cvssData?.baseScore?.toString() || null;
+      
+      cvssCache[cveId] = cvssScore;
+      console.log(`[CVSS] ✓ ${cveId}: ${cvssScore || 'N/A'}`);
+      return cvssScore;
+    }
+    
+    cvssCache[cveId] = null;
+    return null;
+  } catch (e) {
+    // Handle rate limiting with exponential backoff
+    if (e.response?.status === 429) {
+      console.error(`[CVSS] ✗ ${cveId}: Rate limited (429) - will retry with longer delay`);
+      cvssCache[cveId] = null;
+      // Add extra delay for next call
+      lastNVDCall = Date.now() + 2000;
+      return null;
+    }
+    console.error(`[CVSS] ✗ ${cveId}: ${e.message}`);
+    cvssCache[cveId] = null;
+    return null;
+  }
+}
+
+// Batch CVSS enrichment - only fetch scores for priority CVEs
+async function enrichCVEsWithCVSS(cveList, maxFetches = MAX_CVSS_FETCHES) {
+  let fetchCount = 0;
+  const enriched = [];
+  
+  for (const cve of cveList) {
+    // Check if we already have it cached
+    const cached = cvssCache[cve.cve];
+    if (cached !== undefined) {
+      enriched.push({ ...cve, cvssScore: cached });
+      continue;
+    }
+    
+    // If we've hit our fetch limit, skip new lookups
+    if (fetchCount >= maxFetches) {
+      enriched.push({ ...cve, cvssScore: null });
+      continue;
+    }
+    
+    // Fetch the score
+    const score = await getCVSSScore(cve.cve);
+    enriched.push({ ...cve, cvssScore: score });
+    fetchCount++;
+  }
+  
+  console.log(`[CVSS Batch] Fetched ${fetchCount} new scores, used ${cveList.length - fetchCount} cached`);
+  return enriched;
+}
+
 // Decode HTML entities
 function decodeHtmlEntities(text) {
   if (!text) return '';
@@ -103,6 +202,7 @@ function decodeHtmlEntities(text) {
 const RSS_FEEDS = [
   'https://www.wired.com/feed/category/security/latest/rss',
   'https://www.thehackernews.com/feeds/posts/default',
+  'https://news.ycombinator.com/rss',
   'https://feeds.arstechnica.com/arstechnica/index/',
   'https://threatpost.com/feed/',
   'https://krebsonsecurity.com/feed/',
@@ -111,12 +211,11 @@ const RSS_FEEDS = [
   'https://www.cisa.gov/cybersecurity-advisories/all.xml',
   'https://isc.sans.edu/rssfeed.xml',
   'https://www.darkreading.com/rss.xml',
-  'https://feeds.feedburner.com/darknethackers',
-  'https://www.darkreading.com/rss/all.xml',
+  'https://www.darknet.org.uk/feed/',
+  'https://hipaaclicks.com/feed/',
+  'https://www.securityweek.com/feed/',
   'https://www.infosecurity-magazine.com/rss/news/',
-  'https://nakedsecurity.sophos.com/feed/',
-  'https://www.schneier.com/blog/index.rdf',
-  'https://msrc.microsoft.com/update-guide/'
+  'https://www.schneier.com/blog/index.rdf'
 ];
 
 const MISP_FEEDS = [
@@ -125,83 +224,13 @@ const MISP_FEEDS = [
   { url: 'https://threatfox.abuse.ch/export/csv/recent/', name: 'ThreatFox Recent', type: 'csv' }
 ];
 
-let cache = { threats: [], zeroDays: [], lastUpdate: 0, ipEnrichmentCache: {} };
+let cache = { threats: [], zeroDays: [], lastUpdate: 0, cvssCache: {} };
 const CACHE_TTL = 15 * 60 * 1000;
-const VT_RATE_LIMIT_DELAY = 15000;
 
-// VT API with caching
-let lastVTCall = 0;
-async function getVTData(ip) {
-  console.log(`[VT] Checking IP: ${ip}`);
-  
-  if (cache.ipEnrichmentCache[ip] && cache.ipEnrichmentCache[ip].vt !== undefined) {
-    console.log(`[VT] Cache hit for ${ip}: ${cache.ipEnrichmentCache[ip].vt}`);
-    return cache.ipEnrichmentCache[ip].vt;
-  }
-
-  const now = Date.now();
-  const timeSinceLastCall = now - lastVTCall;
-  if (timeSinceLastCall < VT_RATE_LIMIT_DELAY) {
-    const waitTime = VT_RATE_LIMIT_DELAY - timeSinceLastCall;
-    console.log(`[VT] Rate limiting: waiting ${waitTime}ms`);
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-  }
-
-  try {
-    console.log(`[VT] Making API call for ${ip}`);
-    lastVTCall = Date.now();
-    const response = await axios.get(`https://www.virustotal.com/api/v3/ip_addresses/${ip}`, {
-      headers: { 'x-apikey': VT_KEY },
-      timeout: 5000
-    });
-    
-    const malicious = response.data?.data?.attributes?.last_analysis_stats?.malicious || 0;
-    console.log(`[VT] Success for ${ip}: ${malicious} malicious detections`);
-    
-    if (!cache.ipEnrichmentCache[ip]) cache.ipEnrichmentCache[ip] = {};
-    cache.ipEnrichmentCache[ip].vt = malicious;
-    
-    return malicious;
-  } catch (e) {
-    console.error(`[VT] Error for ${ip}:`, {
-      message: e.message,
-      status: e.response?.status
-    });
-    return 0;
-  }
-}
-
-async function getAbuseIPDBData(ip) {
-  console.log(`[AbuseIPDB] Checking IP: ${ip}`);
-  
-  if (cache.ipEnrichmentCache[ip] && cache.ipEnrichmentCache[ip].abuse !== undefined) {
-    console.log(`[AbuseIPDB] Cache hit for ${ip}: ${cache.ipEnrichmentCache[ip].abuse}%`);
-    return cache.ipEnrichmentCache[ip].abuse;
-  }
-
-  try {
-    console.log(`[AbuseIPDB] Making API call for ${ip}`);
-    const response = await axios.get('https://api.abuseipdb.com/api/v2/check', {
-      params: { ipAddress: ip, maxAgeInDays: 90 },
-      headers: { Key: ABUSEIPDB_KEY },
-      timeout: 5000
-    });
-    
-    const score = response.data?.data?.abuseConfidenceScore || 0;
-    console.log(`[AbuseIPDB] Success for ${ip}: ${score}% confidence`);
-    
-    if (!cache.ipEnrichmentCache[ip]) cache.ipEnrichmentCache[ip] = {};
-    cache.ipEnrichmentCache[ip].abuse = score;
-    
-    return score;
-  } catch (e) {
-    console.error(`[AbuseIPDB] Error for ${ip}:`, {
-      message: e.message,
-      status: e.response?.status
-    });
-    return 0;
-  }
-}
+// ========================================
+// REMOVED: IP Enrichment Functions (VT & AbuseIPDB)
+// No longer needed - saves significant API calls and time
+// ========================================
 
 function classifyThreat(item) {
   const text = `${item.title} ${item.contentSnippet || ''}`.toLowerCase();
@@ -270,47 +299,6 @@ function determineThreatType(item) {
   return 'threat-intel';
 }
 
-function extractFirstIP(indicators) {
-  if (!indicators || !Array.isArray(indicators)) {
-    console.log('[IP Extract] No indicators array');
-    return null;
-  }
-
-  console.log(`[IP Extract] Checking ${indicators.length} indicators`);
-
-  indicators.slice(0, 5).forEach((ind, idx) => {
-    console.log(`  [${idx}] type: "${ind.type}", indicator: "${ind.indicator}"`);
-  });
-
-  const ipTypes = ['IPv4', 'IPV4', 'ip', 'IP', 'IPv4 Address', 'ip-dst', 'ip-src'];
-  const ipIndicator = indicators.find(i => 
-    i.type && ipTypes.some(t => i.type.toLowerCase() === t.toLowerCase())
-  );
-
-  if (ipIndicator && ipIndicator.indicator) {
-    const ip = ipIndicator.indicator.trim();
-    if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(ip)) {
-      console.log(`[IP Extract] Found IP via type: ${ip} (type: ${ipIndicator.type})`);
-      return ip;
-    }
-  }
-
-  const ipv4Regex = /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/;
-  for (const ind of indicators) {
-    if (ind.indicator) {
-      const match = ind.indicator.match(ipv4Regex);
-      if (match) {
-        const ip = match[1];
-        console.log(`[IP Extract] Found IP via regex: ${ip} (type: ${ind.type})`);
-        return ip;
-      }
-    }
-  }
-
-  console.log('[IP Extract] No IPv4 indicator found');
-  return null;
-}
-
 function parseTxtFeed(data) {
   const lines = data.split('\n');
   const iocs = [];
@@ -363,40 +351,47 @@ function parseCsvFeed(data) {
 
 async function fetchData() {
   const now = Date.now();
-  if (cache.lastUpdate > now - CACHE_TTL) return cache;
+  if (cache.lastUpdate > now - CACHE_TTL) {
+    console.log('[CACHE] Using cached data');
+    return cache;
+  }
 
   const zeroDays = [];
   const threats = [];
   const seenIOCs = new Set();
 
+  // Restore cached CVSS scores
+  cvssCache = cache.cvssCache || {};
+
   // ========================================
-  // ENHANCED: RSS Feeds - Search Title AND Content
+  // ENHANCED: RSS Feeds - Search Title AND Content with CVSS
   // ========================================
   for (const url of RSS_FEEDS) {
     try {
       const feed = await parser.parseURL(url);
       const sourceName = feed.title?.split(' - ')[0] || url.split('/')[2];
       
-      feed.items.slice(0, 10).forEach(item => {
+      for (const item of feed.items.slice(0, 10)) {
         const title = item.title || '';
         const content = item.contentSnippet || '';
         const fullText = `${title} ${content}`;
         const combinedText = fullText.toLowerCase();
         
         const skipKeywords = ['virtual event', 'sale', 'meetup', 'meet up'];
-        if (skipKeywords.some(keyword => combinedText.includes(keyword))) return;
+        if (skipKeywords.some(keyword => combinedText.includes(keyword))) continue;
         
         const itemDate = new Date(item.pubDate || item.isoDate);
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-        if (itemDate < sevenDaysAgo) return;
+        if (itemDate < sevenDaysAgo) continue;
         
-        // ENHANCED: Search full text for CVEs, not just title
+        // ENHANCED: Search full text for CVEs with CVSS enrichment
         const cveMatch = fullText.match(/CVE[-–]?(\d{4}-\d{4,7})/i);
         if (cveMatch) {
+          const cveId = `CVE-${cveMatch[1]}`;
+          
           // ENHANCED: Better product extraction from context
           let product = 'Unknown';
           
-          // Try to find product name near the CVE mention
           const cveContext = fullText.substring(
             Math.max(0, fullText.indexOf(cveMatch[0]) - 100),
             Math.min(fullText.length, fullText.indexOf(cveMatch[0]) + 100)
@@ -406,7 +401,6 @@ async function fetchData() {
           if (productMatch) {
             product = productMatch[1].trim();
           } else {
-            // Fallback to title parsing
             if (title.includes('Microsoft')) product = 'Microsoft';
             else if (title.includes('Google')) product = 'Google';
             else if (title.includes('Apple')) product = 'Apple';
@@ -414,15 +408,18 @@ async function fetchData() {
             else if (title.includes('Oracle')) product = 'Oracle';
             else if (title.includes('Cisco')) product = 'Cisco';
             else {
-              // Use the new extraction function
-              product = extractProductFromDescription(title, cveMatch[0]);
+              product = extractProductFromDescription(title, cveId);
             }
           }
           
+          // ENHANCED: Fetch CVSS score for RSS-discovered CVEs
+          const cvssScore = await getCVSSScore(cveId);
+          
           zeroDays.push({
-            cve: `CVE-${cveMatch[1]}`,
+            cve: cveId,
             product: product,
             dateAdded: itemDate.toISOString().split('T')[0],
+            cvssScore: cvssScore,
             source: sourceName,
             link: item.link
           });
@@ -441,26 +438,33 @@ async function fetchData() {
           sourceUrl: item.link,
           source: sourceName
         });
-      });
+      }
     } catch (e) {
-      console.error(`Error parsing ${url}:`, e.message);
+      console.error(`Error parsing ${url}: ${e.message}`);
     }
   }
 
-  // CISA KEV
+  // ========================================
+  // OPTIMIZED: CISA KEV with batched CVSS enrichment
+  // ========================================
   try {
     console.log('[CISA KEV] Fetching...');
     const kev = await axios.get('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', { timeout: 5000 });
     console.log(`[CISA KEV] Found ${kev.data.vulnerabilities.length} vulnerabilities`);
-    kev.data.vulnerabilities.slice(0, 15).forEach(v => {
-      zeroDays.push({
-        cve: v.cveID,
-        product: v.vendorProject,
-        dateAdded: v.dateAdded,
-        source: 'CISA KEV',
-        link: `https://nvd.nist.gov/vuln/detail/${v.cveID}`
-      });
-    });
+    
+    // Prepare CVEs without fetching scores yet
+    const kevCVEs = kev.data.vulnerabilities.slice(0, 15).map(v => ({
+      cve: v.cveID,
+      product: v.vendorProject,
+      dateAdded: v.dateAdded,
+      source: 'CISA KEV',
+      link: `https://nvd.nist.gov/vuln/detail/${v.cveID}`
+    }));
+    
+    // Batch enrich - with API key, this can fetch all scores
+    const enrichedKEVs = await enrichCVEsWithCVSS(kevCVEs, NVD_API_KEY ? 15 : 3);
+    zeroDays.push(...enrichedKEVs);
+    console.log(`[CISA KEV] Added ${enrichedKEVs.length} entries`);
   } catch (e) {
     console.error('[CISA KEV] Error:', e.message);
   }
@@ -473,14 +477,15 @@ async function fetchData() {
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     const today = new Date().toISOString();
     
+    const headers = { 'User-Agent': 'Hyperion-CTI-Dashboard/1.0' };
+    if (NVD_API_KEY) headers['apiKey'] = NVD_API_KEY;
+    
     const nvd = await axios.get('https://services.nvd.nist.gov/rest/json/cves/2.0', {
       params: {
         pubStartDate: thirtyDaysAgo,
         pubEndDate: today
       },
-      headers: {
-        'User-Agent': 'Hyperion-CTI-Dashboard/1.0'
-      },
+      headers: headers,
       timeout: 10000
     });
     
@@ -519,13 +524,12 @@ async function fetchData() {
       });
     }
   } catch (e) {
-    console.error('[NVD] Error:', {
-      message: e.message,
-      status: e.response?.status
-    });
+    console.error('[NVD] Error:', e.message);
   }
 
-  // VulnCheck KEV
+  // ========================================
+  // OPTIMIZED: VulnCheck KEV with batched CVSS enrichment
+  // ========================================
   try {
     console.log('[VulnCheck] Fetching KEV data...');
     const vulncheck = await axios.get('https://api.vulncheck.com/v3/index/vulncheck-kev', {
@@ -534,15 +538,19 @@ async function fetchData() {
     
     if (vulncheck.data?.data) {
       console.log(`[VulnCheck] Found ${vulncheck.data.data.length} exploited CVEs`);
-      vulncheck.data.data.slice(0, 10).forEach((v) => {
-        zeroDays.push({
-          cve: v.cve || 'Unknown',
-          product: v.vendorProject || v.product || 'Unknown',
-          dateAdded: v.dateAdded?.split('T')[0] || 'Unknown',
-          source: 'VulnCheck KEV',
-          link: `https://nvd.nist.gov/vuln/detail/${v.cve}`
-        });
-      });
+      
+      const vulnCheckCVEs = vulncheck.data.data.slice(0, 10).map(v => ({
+        cve: v.cve || 'Unknown',
+        product: v.vendorProject || v.product || 'Unknown',
+        dateAdded: v.dateAdded?.split('T')[0] || 'Unknown',
+        source: 'VulnCheck KEV',
+        link: `https://nvd.nist.gov/vuln/detail/${v.cve}`
+      }));
+      
+      // Batch enrich - with API key, can fetch more scores
+      const enrichedVulnCheck = await enrichCVEsWithCVSS(vulnCheckCVEs, NVD_API_KEY ? 10 : 2);
+      zeroDays.push(...enrichedVulnCheck);
+      console.log(`[VulnCheck] Added ${enrichedVulnCheck.length} entries`);
     }
   } catch (e) {
     console.error('[VulnCheck] Error:', e.message);
@@ -552,7 +560,9 @@ async function fetchData() {
     .sort((a, b) => b.dateAdded.localeCompare(a.dateAdded))
     .slice(0, 25);
 
-  // OTX Threats with IP Enrichment
+  // ========================================
+  // SIMPLIFIED: OTX Threats WITHOUT IP Enrichment
+  // ========================================
   try {
     console.log('[OTX] Fetching pulses...');
     const otx = await axios.get('https://otx.alienvault.com/api/v1/pulses/subscribed?limit=10', {
@@ -563,53 +573,25 @@ async function fetchData() {
     console.log(`[OTX] Received ${otx.data.results.length} pulses`);
 
     for (const p of otx.data.results) {
-      const indicators = p.indicators || [];
-      console.log(`[OTX] Pulse "${p.name}" has ${indicators.length} indicators`);
-      
-      const ip = extractFirstIP(indicators);
-      console.log(`[OTX] Extracted IP: ${ip || 'none'}`);
-      
-      let enrichment = '';
-      let severity = 'Medium';
-
-      if (ip && !seenIOCs.has(ip)) {
-        seenIOCs.add(ip);
-        console.log(`[OTX] Enriching IP: ${ip}`);
-        
-        const [vtMalicious, abuseScore] = await Promise.all([
-          getVTData(ip),
-          getAbuseIPDBData(ip)
-        ]);
-        
-        enrichment = ` | ${ip} | VT: ${vtMalicious} malicious | Abuse: ${abuseScore}%`;
-        
-        if (abuseScore > 80 || vtMalicious > 10) {
-          severity = 'Critical';
-        } else if (abuseScore > 50 || vtMalicious > 3) {
-          severity = 'High';
-        } else {
-          severity = 'Medium';
-        }
-      } else {
-        enrichment = '';
-        console.log(`[OTX] No IPv4 found or already enriched — skipping`);
-      }
-
       const tags = (p.tags || []).join(' ').toLowerCase();
       const description = (p.description || '').toLowerCase();
       const combined = `${tags} ${description} ${p.name}`.toLowerCase();
+      
+      let severity = 'Medium';
       
       if ((combined.includes('critical') && combined.includes('exploit')) ||
           combined.includes('ransomware attack') || 
           combined.includes('zero-day')) {
         severity = 'Critical';
+      } else if (combined.includes('exploit') || combined.includes('malware')) {
+        severity = 'High';
       }
 
       threats.push({
         id: p.id,
         type: p.tags[0] || 'malware',
         severity: severity,
-        summary: decodeHtmlEntities(p.name) + enrichment,
+        summary: decodeHtmlEntities(p.name),
         lastSeen: p.modified,
         sourceUrl: `https://otx.alienvault.com/pulse/${p.id}`,
         source: 'OTX'
@@ -618,10 +600,7 @@ async function fetchData() {
     
     console.log(`[OTX] Successfully processed ${otx.data.results.length} pulses`);
   } catch (e) {
-    console.error('[OTX] Error fetching pulses:', {
-      message: e.message,
-      status: e.response?.status
-    });
+    console.error('[OTX] Error:', e.message);
   }
 
   // MISP Feeds
@@ -645,7 +624,7 @@ async function fetchData() {
         });
       }
     } catch (e) {
-      console.error(`Error fetching MISP feed ${feed.name}:`, e.message);
+      console.error(`Error fetching MISP feed ${feed.name}: ${e.message}`);
     }
   }
 
@@ -653,7 +632,13 @@ async function fetchData() {
     .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
     .slice(0, 100);
 
-  cache = { threats: sortedThreats, zeroDays: uniqueZeroDays, lastUpdate: now, ipEnrichmentCache: cache.ipEnrichmentCache };
+  cache = { 
+    threats: sortedThreats, 
+    zeroDays: uniqueZeroDays, 
+    lastUpdate: now, 
+    cvssCache: cvssCache
+  };
+  
   return cache;
 }
 
@@ -665,20 +650,28 @@ exports.handler = async () => {
       totalThreats: data.threats.length,
       otxThreats: data.threats.filter(t => t.source === 'OTX').length,
       mispThreats: data.threats.filter(t => t.source === 'MISP Feed').length,
-      enrichedIPs: Object.keys(data.ipEnrichmentCache).length,
       totalCVEs: data.zeroDays.length,
-      cvesWithCVSS: data.zeroDays.filter(z => z.cvssScore).length
+      cvesWithCVSS: data.zeroDays.filter(z => z.cvssScore).length,
+      cvssEnrichmentRate: data.zeroDays.length > 0 
+        ? `${Math.round((data.zeroDays.filter(z => z.cvssScore).length / data.zeroDays.length) * 100)}%`
+        : '0%'
     };
     
     console.log('[DIAGNOSTICS]', JSON.stringify(diagnostics));
     
     return {
       statusCode: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Cache-Control': 'public, max-age=900'
+      },
       body: JSON.stringify(data)
     };
   } catch (e) {
-    console.error('Handler error:', e);
-    return { statusCode: 500, body: JSON.stringify({ error: 'Server error' }) };
+    console.error('Handler error:', e.message);
+    return { 
+      statusCode: 500, 
+      body: JSON.stringify({ error: 'Server error' }) 
+    };
   }
 };
