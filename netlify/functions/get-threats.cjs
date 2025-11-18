@@ -26,6 +26,59 @@ if (!OTX_KEY || !VT_KEY || !ABUSEIPDB_KEY) {
   return;
 }
 
+// ========================================
+// ENHANCED: Product Name Extraction
+// ========================================
+function extractProductFromDescription(description, cveId = '') {
+  if (!description) return 'Unknown';
+  
+  // Remove common prefixes and noise words
+  let cleaned = description
+    .replace(/^(A|An|The)\s+/i, '')
+    .replace(/vulnerability (in|within|affecting|found in)/gi, '')
+    .replace(/security (flaw|issue|bug)/gi, '')
+    .replace(/allows?\s+(remote|local)?\s*(attackers?|users?)/gi, '')
+    .trim();
+  
+  // Pattern 1: "Vendor Product" (e.g., "Microsoft Windows", "Apache Tomcat", "Google Chrome")
+  const vendorProductMatch = cleaned.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/);
+  if (vendorProductMatch) {
+    const product = vendorProductMatch[1].trim();
+    // Filter out generic words
+    if (!['Application', 'Software', 'System', 'Service'].includes(product.split(' ')[0])) {
+      return product;
+    }
+  }
+  
+  // Pattern 2: "product_name version" (e.g., "linux kernel", "wordpress")
+  const productVersionMatch = cleaned.match(/^([a-z][a-z0-9_-]+)\s+(?:version\s+)?[\d.]+/i);
+  if (productVersionMatch) {
+    return productVersionMatch[1].split(/[-_]/).map(w => 
+      w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+    ).join(' ');
+  }
+  
+  // Pattern 3: First capitalized word or phrase (up to 3 words)
+  const capitalizedMatch = cleaned.match(/^([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){0,2})/);
+  if (capitalizedMatch) {
+    return capitalizedMatch[1].trim();
+  }
+  
+  // Pattern 4: Look for product names after common indicators
+  const indicatorMatch = cleaned.match(/(?:in|for|affecting)\s+([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)?)/i);
+  if (indicatorMatch) {
+    return indicatorMatch[1].trim();
+  }
+  
+  // Fallback: First word if it's capitalized
+  const firstWord = cleaned.split(/\s+/)[0];
+  if (firstWord && /^[A-Z]/.test(firstWord)) {
+    return firstWord;
+  }
+  
+  return 'Unknown';
+}
+
 // Decode HTML entities
 function decodeHtmlEntities(text) {
   if (!text) return '';
@@ -33,17 +86,15 @@ function decodeHtmlEntities(text) {
   const entities = {
     '&#8217;': "'", '&#8216;': "'", '&#8220;': '"', '&#8221;': '"',
     '&#8211;': '–', '&#8212;': '—', '&#x26;': '&', '&#38;': '&',
-    '&#xa;': ' ', '&#10;': ' ', '&#xA;': ' ', // Multiple case variations
-    '&quot;': '"', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&apos;': "'"
+    '&#xa;': ' ', '&#10;': ' ', '&#xA;': ' ',
+    '&quot;': '"', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&#124;': '|', '&apos;': "'"
   };
   
-  // Replace entities (case-insensitive for hex codes)
   let decoded = text.replace(/&#?[xX]?[0-9a-fA-F]+;/g, match => {
     const lower = match.toLowerCase();
     return entities[lower] || entities[match] || match;
   });
   
-  // Clean up multiple spaces
   decoded = decoded.replace(/\s+/g, ' ').trim();
   
   return decoded;
@@ -54,15 +105,20 @@ const RSS_FEEDS = [
   'https://www.thehackernews.com/feeds/posts/default',
   'https://feeds.arstechnica.com/arstechnica/index/',
   'https://threatpost.com/feed/',
-  'https://krebsonsecurity.com/feed/atom/',
+  'https://krebsonsecurity.com/feed/',
   'https://www.bleepingcomputer.com/feed/',
   'https://feeds.feedburner.com/threatintelligence/pvexyqv7v0v',
   'https://www.cisa.gov/cybersecurity-advisories/all.xml',
   'https://isc.sans.edu/rssfeed.xml',
-  'https://www.darkreading.com/rss.xml'
+  'https://www.darkreading.com/rss.xml',
+  'https://feeds.feedburner.com/darknethackers',
+  'https://www.darkreading.com/rss/all.xml',
+  'https://www.infosecurity-magazine.com/rss/news/',
+  'https://nakedsecurity.sophos.com/feed/',
+  'https://www.schneier.com/blog/index.rdf',
+  'https://msrc.microsoft.com/update-guide/'
 ];
 
-// MISP Feeds
 const MISP_FEEDS = [
   { url: 'http://reputation.alienvault.com/reputation.data', name: 'DShield Top Attackers', type: 'txt' },
   { url: 'https://www.spamhaus.org/drop/drop.txt', name: 'Spamhaus DROP', type: 'txt' },
@@ -70,21 +126,19 @@ const MISP_FEEDS = [
 ];
 
 let cache = { threats: [], zeroDays: [], lastUpdate: 0, ipEnrichmentCache: {} };
-const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
-const VT_RATE_LIMIT_DELAY = 15000; // 15 seconds between VT calls (4 per minute)
+const CACHE_TTL = 15 * 60 * 1000;
+const VT_RATE_LIMIT_DELAY = 15000;
 
-// Throttle VT API calls with cache
+// VT API with caching
 let lastVTCall = 0;
 async function getVTData(ip) {
   console.log(`[VT] Checking IP: ${ip}`);
   
-  // Check cache first
   if (cache.ipEnrichmentCache[ip] && cache.ipEnrichmentCache[ip].vt !== undefined) {
     console.log(`[VT] Cache hit for ${ip}: ${cache.ipEnrichmentCache[ip].vt}`);
     return cache.ipEnrichmentCache[ip].vt;
   }
 
-  // Rate limit: 4 req/min = 15s between calls
   const now = Date.now();
   const timeSinceLastCall = now - lastVTCall;
   if (timeSinceLastCall < VT_RATE_LIMIT_DELAY) {
@@ -104,7 +158,6 @@ async function getVTData(ip) {
     const malicious = response.data?.data?.attributes?.last_analysis_stats?.malicious || 0;
     console.log(`[VT] Success for ${ip}: ${malicious} malicious detections`);
     
-    // Cache result
     if (!cache.ipEnrichmentCache[ip]) cache.ipEnrichmentCache[ip] = {};
     cache.ipEnrichmentCache[ip].vt = malicious;
     
@@ -112,18 +165,15 @@ async function getVTData(ip) {
   } catch (e) {
     console.error(`[VT] Error for ${ip}:`, {
       message: e.message,
-      status: e.response?.status,
-      statusText: e.response?.statusText,
-      data: e.response?.data
+      status: e.response?.status
     });
-    return 0; // Fallback
+    return 0;
   }
 }
 
 async function getAbuseIPDBData(ip) {
   console.log(`[AbuseIPDB] Checking IP: ${ip}`);
   
-  // Check cache first
   if (cache.ipEnrichmentCache[ip] && cache.ipEnrichmentCache[ip].abuse !== undefined) {
     console.log(`[AbuseIPDB] Cache hit for ${ip}: ${cache.ipEnrichmentCache[ip].abuse}%`);
     return cache.ipEnrichmentCache[ip].abuse;
@@ -140,7 +190,6 @@ async function getAbuseIPDBData(ip) {
     const score = response.data?.data?.abuseConfidenceScore || 0;
     console.log(`[AbuseIPDB] Success for ${ip}: ${score}% confidence`);
     
-    // Cache result
     if (!cache.ipEnrichmentCache[ip]) cache.ipEnrichmentCache[ip] = {};
     cache.ipEnrichmentCache[ip].abuse = score;
     
@@ -148,15 +197,12 @@ async function getAbuseIPDBData(ip) {
   } catch (e) {
     console.error(`[AbuseIPDB] Error for ${ip}:`, {
       message: e.message,
-      status: e.response?.status,
-      statusText: e.response?.statusText,
-      data: e.response?.data
+      status: e.response?.status
     });
-    return 0; // Fallback
+    return 0;
   }
 }
 
-// Classify severity based on threat indicators
 function classifyThreat(item) {
   const text = `${item.title} ${item.contentSnippet || ''}`.toLowerCase();
   
@@ -224,7 +270,6 @@ function determineThreatType(item) {
   return 'threat-intel';
 }
 
-// Extract first IPv4 from OTX pulse indicators
 function extractFirstIP(indicators) {
   if (!indicators || !Array.isArray(indicators)) {
     console.log('[IP Extract] No indicators array');
@@ -233,12 +278,10 @@ function extractFirstIP(indicators) {
 
   console.log(`[IP Extract] Checking ${indicators.length} indicators`);
 
-  // Log first few for debugging
   indicators.slice(0, 5).forEach((ind, idx) => {
     console.log(`  [${idx}] type: "${ind.type}", indicator: "${ind.indicator}"`);
   });
 
-  // === STRATEGY 1: Match known OTX IPv4 types (case-insensitive) ===
   const ipTypes = ['IPv4', 'IPV4', 'ip', 'IP', 'IPv4 Address', 'ip-dst', 'ip-src'];
   const ipIndicator = indicators.find(i => 
     i.type && ipTypes.some(t => i.type.toLowerCase() === t.toLowerCase())
@@ -252,7 +295,6 @@ function extractFirstIP(indicators) {
     }
   }
 
-  // === STRATEGY 2: Regex scan all indicator strings ===
   const ipv4Regex = /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/;
   for (const ind of indicators) {
     if (ind.indicator) {
@@ -269,7 +311,6 @@ function extractFirstIP(indicators) {
   return null;
 }
 
-// Parse MISP TXT feeds (IP/domain lists)
 function parseTxtFeed(data) {
   const lines = data.split('\n');
   const iocs = [];
@@ -278,32 +319,28 @@ function parseTxtFeed(data) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     
-    // Split by whitespace and take first token
     const tokens = trimmed.split(/\s+/);
     let ioc = tokens[0];
     
-    // For DShield format (IP#reliability#tags#desc), extract just the IP
     if (ioc.includes('#')) {
       ioc = ioc.split('#')[0];
     }
     
-    // Validate: IPv4 (with optional CIDR), IPv4 range, or domain
     if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(\/\d{1,2})?$/.test(ioc) || /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(ioc)) {
       iocs.push(ioc);
     }
     
-    if (iocs.length >= 3) break; // Limit to 3 per feed
+    if (iocs.length >= 3) break;
   }
   
   return iocs;
 }
 
-// Parse MISP CSV feed (ThreatFox)
 function parseCsvFeed(data) {
   const lines = data.split('\n');
   const iocs = [];
   
-  for (let i = 1; i < lines.length; i++) { // Skip header
+  for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
     
@@ -312,7 +349,6 @@ function parseCsvFeed(data) {
     
     const ioc = columns[0].replace(/"/g, '').trim();
     
-    // Validate: IPv4, domain, or hash
     if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(ioc) || 
         /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(ioc) ||
         /^[a-f0-9]{32}$|^[a-f0-9]{64}$/i.test(ioc)) {
@@ -331,9 +367,11 @@ async function fetchData() {
 
   const zeroDays = [];
   const threats = [];
-  const seenIOCs = new Set(); // Global deduplication
+  const seenIOCs = new Set();
 
-  // RSS Feeds
+  // ========================================
+  // ENHANCED: RSS Feeds - Search Title AND Content
+  // ========================================
   for (const url of RSS_FEEDS) {
     try {
       const feed = await parser.parseURL(url);
@@ -342,35 +380,63 @@ async function fetchData() {
       feed.items.slice(0, 10).forEach(item => {
         const title = item.title || '';
         const content = item.contentSnippet || '';
-        const combinedText = `${title} ${content}`.toLowerCase();
+        const fullText = `${title} ${content}`;
+        const combinedText = fullText.toLowerCase();
         
-        // Skip promotional/event content
         const skipKeywords = ['virtual event', 'sale', 'meetup', 'meet up'];
         if (skipKeywords.some(keyword => combinedText.includes(keyword))) return;
         
-        // Skip items older than 7 days
         const itemDate = new Date(item.pubDate || item.isoDate);
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
         if (itemDate < sevenDaysAgo) return;
         
-        const cveMatch = title.match(/CVE[-–]?(\d{4}-\d{4,7})/i);
+        // ENHANCED: Search full text for CVEs, not just title
+        const cveMatch = fullText.match(/CVE[-–]?(\d{4}-\d{4,7})/i);
         if (cveMatch) {
+          // ENHANCED: Better product extraction from context
+          let product = 'Unknown';
+          
+          // Try to find product name near the CVE mention
+          const cveContext = fullText.substring(
+            Math.max(0, fullText.indexOf(cveMatch[0]) - 100),
+            Math.min(fullText.length, fullText.indexOf(cveMatch[0]) + 100)
+          );
+          
+          const productMatch = cveContext.match(/(?:in|for|affecting)\s+([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)?)/i);
+          if (productMatch) {
+            product = productMatch[1].trim();
+          } else {
+            // Fallback to title parsing
+            if (title.includes('Microsoft')) product = 'Microsoft';
+            else if (title.includes('Google')) product = 'Google';
+            else if (title.includes('Apple')) product = 'Apple';
+            else if (title.includes('Adobe')) product = 'Adobe';
+            else if (title.includes('Oracle')) product = 'Oracle';
+            else if (title.includes('Cisco')) product = 'Cisco';
+            else {
+              // Use the new extraction function
+              product = extractProductFromDescription(title, cveMatch[0]);
+            }
+          }
+          
           zeroDays.push({
             cve: `CVE-${cveMatch[1]}`,
-            product: title.includes('Microsoft') ? 'Microsoft' : 
-                     title.includes('Google') ? 'Google' :
-                     title.includes('Apple') ? 'Apple' : 'Unknown',
+            product: product,
             dateAdded: itemDate.toISOString().split('T')[0],
             source: sourceName,
             link: item.link
           });
         }
         
+        let cleanTitle = title.slice(0, 150);
+        cleanTitle = cleanTitle.replace(/&#xa;/gi, ' ').replace(/&#10;/g, ' ').replace(/&#xA;/g, ' ');
+        cleanTitle = decodeHtmlEntities(cleanTitle);
+        
         threats.push({
           id: `rss-${Buffer.from(item.link).toString('base64').slice(0, 10)}`,
           type: determineThreatType(item),
           severity: classifyThreat(item),
-          summary: decodeHtmlEntities((title || '').slice(0, 150)),
+          summary: cleanTitle,
           lastSeen: itemDate.toISOString(),
           sourceUrl: item.link,
           source: sourceName
@@ -383,7 +449,9 @@ async function fetchData() {
 
   // CISA KEV
   try {
+    console.log('[CISA KEV] Fetching...');
     const kev = await axios.get('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', { timeout: 5000 });
+    console.log(`[CISA KEV] Found ${kev.data.vulnerabilities.length} vulnerabilities`);
     kev.data.vulnerabilities.slice(0, 15).forEach(v => {
       zeroDays.push({
         cve: v.cveID,
@@ -394,7 +462,90 @@ async function fetchData() {
       });
     });
   } catch (e) {
-    console.error('Error fetching CISA KEV:', e.message);
+    console.error('[CISA KEV] Error:', e.message);
+  }
+
+  // ========================================
+  // ENHANCED: NVD with CVSS Scores
+  // ========================================
+  try {
+    console.log('[NVD] Fetching recent HIGH/CRITICAL CVEs...');
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const today = new Date().toISOString();
+    
+    const nvd = await axios.get('https://services.nvd.nist.gov/rest/json/cves/2.0', {
+      params: {
+        pubStartDate: thirtyDaysAgo,
+        pubEndDate: today
+      },
+      headers: {
+        'User-Agent': 'Hyperion-CTI-Dashboard/1.0'
+      },
+      timeout: 10000
+    });
+    
+    console.log(`[NVD] Received ${nvd.data.vulnerabilities?.length || 0} CVEs`);
+    
+    if (nvd.data.vulnerabilities) {
+      const criticalCVEs = nvd.data.vulnerabilities
+        .filter((v) => {
+          const metrics = v.cve?.metrics?.cvssMetricV31?.[0] || v.cve?.metrics?.cvssMetricV30?.[0];
+          const severity = metrics?.cvssData?.baseSeverity;
+          return severity === 'HIGH' || severity === 'CRITICAL';
+        })
+        .slice(0, 10);
+      
+      console.log(`[NVD] Filtered to ${criticalCVEs.length} HIGH/CRITICAL CVEs`);
+      
+      criticalCVEs.forEach((v) => {
+        const cve = v.cve;
+        const description = cve.descriptions?.find(d => d.lang === 'en')?.value || '';
+        
+        // ENHANCED: Use new product extraction function
+        const productName = extractProductFromDescription(description, cve.id);
+        
+        // ENHANCED: Extract CVSS score
+        const metrics = cve.metrics?.cvssMetricV31?.[0] || cve.metrics?.cvssMetricV30?.[0];
+        const cvssScore = metrics?.cvssData?.baseScore?.toString() || null;
+        
+        zeroDays.push({
+          cve: cve.id,
+          product: productName,
+          dateAdded: cve.published?.split('T')[0] || 'Unknown',
+          cvssScore: cvssScore,
+          source: 'NVD',
+          link: `https://nvd.nist.gov/vuln/detail/${cve.id}`
+        });
+      });
+    }
+  } catch (e) {
+    console.error('[NVD] Error:', {
+      message: e.message,
+      status: e.response?.status
+    });
+  }
+
+  // VulnCheck KEV
+  try {
+    console.log('[VulnCheck] Fetching KEV data...');
+    const vulncheck = await axios.get('https://api.vulncheck.com/v3/index/vulncheck-kev', {
+      timeout: 5000
+    });
+    
+    if (vulncheck.data?.data) {
+      console.log(`[VulnCheck] Found ${vulncheck.data.data.length} exploited CVEs`);
+      vulncheck.data.data.slice(0, 10).forEach((v) => {
+        zeroDays.push({
+          cve: v.cve || 'Unknown',
+          product: v.vendorProject || v.product || 'Unknown',
+          dateAdded: v.dateAdded?.split('T')[0] || 'Unknown',
+          source: 'VulnCheck KEV',
+          link: `https://nvd.nist.gov/vuln/detail/${v.cve}`
+        });
+      });
+    }
+  } catch (e) {
+    console.error('[VulnCheck] Error:', e.message);
   }
 
   const uniqueZeroDays = [...new Map(zeroDays.map(z => [z.cve, z])).values()]
@@ -419,9 +570,9 @@ async function fetchData() {
       console.log(`[OTX] Extracted IP: ${ip || 'none'}`);
       
       let enrichment = '';
-      let severity = 'Medium'; // default
+      let severity = 'Medium';
 
-      if (ip && !seenIOCs.has(ip) && Object.keys(cache.ipEnrichmentCache).length < 8) {
+      if (ip && !seenIOCs.has(ip)) {
         seenIOCs.add(ip);
         console.log(`[OTX] Enriching IP: ${ip}`);
         
@@ -440,12 +591,10 @@ async function fetchData() {
           severity = 'Medium';
         }
       } else {
-        // No IP or already seen → no enrichment
         enrichment = '';
         console.log(`[OTX] No IPv4 found or already enriched — skipping`);
       }
 
-      // Override severity from tags/description (zero-day, ransomware, etc.)
       const tags = (p.tags || []).join(' ').toLowerCase();
       const description = (p.description || '').toLowerCase();
       const combined = `${tags} ${description} ${p.name}`.toLowerCase();
@@ -471,8 +620,7 @@ async function fetchData() {
   } catch (e) {
     console.error('[OTX] Error fetching pulses:', {
       message: e.message,
-      status: e.response?.status,
-      data: e.response?.data
+      status: e.response?.status
     });
   }
 
@@ -483,7 +631,7 @@ async function fetchData() {
       const iocs = feed.type === 'csv' ? parseCsvFeed(response.data) : parseTxtFeed(response.data);
       
       for (const ioc of iocs) {
-        if (seenIOCs.has(ioc)) continue; // Skip duplicates
+        if (seenIOCs.has(ioc)) continue;
         seenIOCs.add(ioc);
         
         threats.push({
@@ -501,10 +649,9 @@ async function fetchData() {
     }
   }
 
-  // Sort threats by date (most recent first)
   const sortedThreats = threats
     .sort((a, b) => new Date(b.lastSeen).getTime() - new Date(a.lastSeen).getTime())
-    .slice(0, 25);
+    .slice(0, 100);
 
   cache = { threats: sortedThreats, zeroDays: uniqueZeroDays, lastUpdate: now, ipEnrichmentCache: cache.ipEnrichmentCache };
   return cache;
@@ -514,13 +661,13 @@ exports.handler = async () => {
   try {
     const data = await fetchData();
     
-    // Add diagnostics to response (temporary for debugging)
     const diagnostics = {
       totalThreats: data.threats.length,
       otxThreats: data.threats.filter(t => t.source === 'OTX').length,
       mispThreats: data.threats.filter(t => t.source === 'MISP Feed').length,
       enrichedIPs: Object.keys(data.ipEnrichmentCache).length,
-      ipCache: data.ipEnrichmentCache
+      totalCVEs: data.zeroDays.length,
+      cvesWithCVSS: data.zeroDays.filter(z => z.cvssScore).length
     };
     
     console.log('[DIAGNOSTICS]', JSON.stringify(diagnostics));
