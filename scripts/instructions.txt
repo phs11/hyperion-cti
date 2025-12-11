@@ -1,266 +1,229 @@
-Hyperion CTI - Tenable Integration Setup Guide
-📋 What This Does
-Automatically checks your Hyperion dashboard CVEs against your Tenable environment and generates daily reports showing which CVEs actually affect your assets.
-Output: Excel report with "Exploitable?" column + automatic Teams notification
-
-🔧 Step 1: Install Python (if not already installed)
-
-Download Python from: https://www.python.org/downloads/
-IMPORTANT: Check "Add Python to PATH" during installation!
-Verify installation:
-
-bashpython --version
-Should show: Python 3.x.x
-
-📦 Step 2: Install Python Dependencies
-Option A: Using the batch file (easiest)
-bashcd C:\path\to\hyperion-cti\scripts
-install_dependencies.bat
-Option B: Manual installation
-bashcd C:\path\to\hyperion-cti\scripts
-pip install -r requirements.txt
-Option C: One-by-one
-bashpip install requests openpyxl python-dotenv pandas
-
-🔑 Step 3: Update Your .env File
-Your existing .env file already has backend keys. Just add Tenable keys:
-env# ============================================
-# Hyperion CTI - Combined Configuration File
-# ============================================
-
-# --------------------------------------------
-# Backend API Keys (for Netlify Functions)
-# --------------------------------------------
-OTX_API_KEY=your-existing-otx-key
-VT_API_KEY=your-existing-vt-key
-ABUSEIPDB_API_KEY=your-existing-abuseipdb-key
-NVD_API_KEY=your-existing-nvd-key
-
-# --------------------------------------------
-# Tenable Integration (ADD THESE)
-# --------------------------------------------
-TENABLE_ACCESS_KEY=your-tenable-access-key-here
-TENABLE_SECRET_KEY=your-tenable-secret-key-here
-
-# --------------------------------------------
-# Microsoft Teams (Optional)
-# --------------------------------------------
-TEAMS_WEBHOOK_URL=none
-
-# --------------------------------------------
-# Hyperion Data Source
-# --------------------------------------------
-HYPERION_FUNCTION_URL=https://hyperion-cti.netlify.app/.netlify/functions/get-threats
-How to Get Tenable Keys:
-
-Log into Tenable.io → https://cloud.tenable.com
-Profile icon (top right) → My Account
-API Keys tab → Generate
-Copy both Access Key and Secret Key
-Paste into .env file
-
-
-🚀 Step 4: Test the Script
-Manual Test Run:
-bashcd C:\path\to\hyperion-cti\scripts
-python tenable_checker.py
-Using Batch File:
-bashcd C:\path\to\hyperion-cti\scripts
-run_daily_check.bat
-Expected Output:
-============================================================
-Hyperion CTI - Tenable Integration Script
-Started: 2025-01-06 09:00:00
-============================================================
-[1/5] Fetching CVEs from Hyperion dashboard...
-   Endpoint: https://hyperion-cti.netlify.app/.netlify/functions/get-threats
-   ✓ Found 25 CVEs from Hyperion
-
-[2/5] Checking 25 CVEs in Tenable...
-   Checking CVE-2025-1234 (1/25)... ✓ Exploitable
-   Checking CVE-2025-5678 (2/25)... ○ Not found
-   ...
-
-[3/5] Generating Excel report...
-   ✓ Report saved: C:\hyperion-cti\reports\CVE_Report_2025-01-06_0900.xlsx
-
-[4/5] Skipping Teams notification (webhook not configured)
-
-[5/5] Summary:
-   Total CVEs analyzed: 25
-   🚨 Exploitable in our environment: 3
-   ⚠️  High priority: 3
-   📄 Report: C:\hyperion-cti\reports\CVE_Report_2025-01-06_0900.xlsx
-
-============================================================
-✓ Daily check complete!
-============================================================
-
-📊 Data Source Options
-The script now supports TWO ways to get CVE data:
-Option 1: Live Netlify Function (Recommended)
-envHYPERION_FUNCTION_URL=https://hyperion-cti.netlify.app/.netlify/functions/get-threats
-Pros:
+Quick CVE Check - Usage Guide
+Overview
+The quick_check.py script provides on-demand CVE checking against your Tenable environment. It's designed with two modes:
 
-✅ Always up-to-date
-✅ No manual exports needed
-✅ Automatic refresh
+Clean Mode (default): Executive-ready output for presenting to leadership
+Debug Mode: Detailed technical output for troubleshooting
 
-Cons:
+Quick Start
+Basic Usage (Clean Output)
+bash
+python quick_check.py CVE-2024-1234
 
-⚠️ Requires internet connection
-⚠️ Depends on Netlify function being up
+Output Example:
+======================================================================
+              Hyperion CTI - Quick CVE Check
+                     2024-12-11 14:30:45
+======================================================================
 
-Option 2: Local CSV Export (Fallback)
+✓ Connected to Tenable
 
-Export CVEs from your dashboard (add export button)
-Save as cve_export.csv
-Set path in .env:
+Checking 1 CVE(s)...
+  [1/1] CVE-2025-62215... 🚨 VULNERABLE
 
-envHYPERION_CSV_PATH=C:\hyperion-cti\cve_export.csv
-CSV Format:
-csvCVE ID,Product,CVSS Score,Date Added,Source
-CVE-2025-1234,Microsoft Windows,9.8,2025-01-05,CISA KEV
-CVE-2025-5678,Apache Tomcat,7.5,2025-01-04,NVD
+Detailed Results
+----------------
 
-⏰ Step 5: Schedule Daily Automation
-Windows Task Scheduler Setup:
+CVE: CVE-2025-62215
+  Status:           🚨 VULNERABLE
+  Affected Assets:  1
+  Severity:         CRITICAL
+  Details:          1 asset(s) affected
+  ⚠️  ACTION REQUIRED
 
-Open Task Scheduler (Win + R → taskschd.msc)
-Create Basic Task
-Name: Hyperion Daily CVE Check
-Trigger: Daily at 8:00 AM
-Action: Start a program
+Debug Mode
+bash
+python quick_check.py CVE-2024-1234 --debug
 
-Program: C:\hyperion-cti\scripts\run_daily_check.bat
-Start in: C:\hyperion-cti\scripts
+When to use: Troubleshooting API issues, verifying filter syntax, or investigating unexpected results.
 
+Multiple CVEs
+bash
+python quick_check.py CVE-2024-1234 CVE-2024-5678 CVE-2024-9012
 
-Click Finish
+Output includes an Executive Summary:
 
-Advanced Settings:
-Right-click task → Properties:
+Executive Summary
+-----------------
+  Total CVEs Checked:     3
+  🚨 Vulnerable in Environment: 2
+  ✓ Not Found:                 1
+  ⚠ Errors:                    0
 
-General: Run whether user is logged on or not
-Triggers: Run daily at 8:00 AM
-Actions: Start run_daily_check.bat
-Conditions: Uncheck "Start only if on AC power"
-Settings:
+  ⚠️  ATTENTION: 2 CVE(s) require immediate remediation
 
-✅ "If task fails, restart every 10 minutes"
-✅ "Stop task if it runs longer than 1 hour"
+Vulnerable CVEs:
+    • CVE-2024-1234: 5 asset(s) - CRITICAL
+    • CVE-2024-5678: 2 asset(s) - HIGH
 
+Use Cases
 
+1. Ad-Hoc Request
+Scenario: "Can you quickly check if we're vulnerable to CVE-2024-XXXX?"
 
+bash
+python quick_check.py CVE-2024-XXXX
 
-🐛 Troubleshooting
-Import Errors (requests, openpyxl, etc.)
-Problem:
-Import "requests" could not be resolved from source
-Solution:
-bashcd C:\hyperion-cti\scripts
-install_dependencies.bat
-If that fails, try:
-bashpython -m pip install --upgrade pip
-pip install requests openpyxl python-dotenv pandas
-Still having issues? Check which Python VSCode is using:
+Screenshot/copy the output and send directly to leadership. The clean format is ready for presentation.
 
-Ctrl+Shift+P → "Python: Select Interpreter"
-Choose the Python where you installed packages
+2. Morning Security Brief
 
+Scenario: Check multiple high-profile CVEs announced overnight
 
-Error: "Tenable API keys not configured"
-Problem: Script can't find your Tenable keys
-Solution:
+bash
+python quick_check.py CVE-2024-1234 CVE-2024-5678 CVE-2024-9012
 
-Check .env file is in project root (not in scripts\)
-Keys should NOT have quotes: ✅ TENABLE_ACCESS_KEY=abc123
-No spaces around = sign
-Make sure keys are actually there (not just placeholder text)
+Use the Executive Summary section for your security briefing.
 
+3. Incident Response
 
-Error: "No CVEs to process"
-Problem: Can't fetch data from Netlify function
-Solutions:
+Scenario: New CVE announced with active exploitation
 
-Test the URL manually:
+bash
+python quick_check.py CVE-2024-XXXX --debug > incident_report.txt
 
-Open browser
-Go to: https://hyperion-cti.netlify.app/.netlify/functions/get-threats
-Should see JSON data with zeroDays array
+Debug mode provides full technical details for incident documentation.
 
+4. Vendor Security Advisory
+Scenario: Vendor announces multiple CVEs affecting their product
 
-If URL doesn't work:
+bash
+python quick_check.py CVE-2024-0001 CVE-2024-0002 CVE-2024-0003 CVE-2024-0004
 
-Use CSV export method instead
-Add export button to your dashboard
-Set HYPERION_CSV_PATH in .env
+Quickly triage which CVEs actually affect your environment.
 
+Command-Line Options
 
-Check firewall/network:
+Option | Description
+CVE-XXXX-XXXXX: One or more CVE IDs to check
+--debug or -d: Enable verbose debugging output
 
-Make sure Python can access internet
-Try: ping hyperion-cti.netlify.app
-
-
-
-
-Script Runs But No Report Generated
-Solution:
-
-Check reports\ folder was created
-Run Command Prompt as Administrator
-Check disk space (reports can be 100KB each)
-Verify write permissions on folder
-
-
-Excel File Won't Open
-Problem: "File is corrupted" error
-Solution:
-
-Update Python: python -m pip install --upgrade openpyxl
-Try different Excel version (Excel vs Excel Online)
-Open with Google Sheets as alternative
-
-
-✅ Delivered:
-
-Custom CTI platform (dashboard)
-Automated Tenable integration
-Daily CVE reports with exploitability status
-Excel exports for manual review
-
-⏸️ Pending:
-
-Teams webhook (needs IT approval)
-Data breach intelligence (requires scoping)
-
-💰 Commercial Value:
-
-CTI Platform: $50k-100k/year
-Vulnerability Management Integration: $30k-50k/year
-Total: $80k-150k/year equivalent
-
-Keep reports organized:
-
-bash   reports\
-   ├── 2025-01\
-   ├── 2025-02\
-   └── archive\
-
-Track trends:
-
-Compare exploitable count week-over-week
-Identify which CVEs appear most in your environment
-
-
-Share network folder:
-
-Map reports\ folder to network drive
-Team can access reports without email
-
-
-Add to runbook:
-
-Document where reports are saved
-Add to incident response procedures
+Output Interpretation
+
+Status Indicators
+Symbol | Meaning | Action Required
+🚨 VULNERABLE | CVE affects your assets | IMMEDIATE - Review and patch
+✓ Clear | CVE not found in environment | None - Monitor
+⚠ Error | API error occurred | Check debug mode
+
+Severity Colors (Terminal)
+
+RED - Critical severity
+YELLOW - High severity
+BLUE - Medium severity
+GREEN - Low severity
+
+Exit Codes
+
+0 - Success, no vulnerabilities found
+1 - Vulnerabilities found (useful for automation/scripts)
+
+Examples
+Example 1: Single CVE Check
+bash
+$ python quick_check.py CVE-2021-44228
+
+✓ Connected to Tenable
+Checking 1 CVE(s)...
+  [1/1] CVE-2021-44228... 🚨 VULNERABLE
+
+CVE: CVE-2021-44228
+  Status:           🚨 VULNERABLE
+  Affected Assets:  12
+  Severity:         CRITICAL
+  Details:          12 asset(s) affected
+  ⚠️  ACTION REQUIRED
+
+Example 2: Multiple CVEs with Summary
+bash
+$ python quick_check.py CVE-2024-0001 CVE-2024-0002 CVE-2024-0003
+
+✓ Connected to Tenable
+Checking 3 CVE(s)...
+  [1/3] CVE-2024-0001... 🚨 VULNERABLE
+  [2/3] CVE-2024-0002... ✓ Clear
+  [3/3] CVE-2024-0003... 🚨 VULNERABLE
+
+[... detailed results ...]
+
+Executive Summary
+-----------------
+  Total CVEs Checked:     3
+  🚨 Vulnerable in Environment: 2
+  ✓ Not Found:                 1
+Example 3: Debug Mode for Troubleshooting
+bash
+$ python quick_check.py CVE-2025-62215 --debug
+
+======================================================================
+       Hyperion CTI - CVE Check (DEBUG MODE)
+                2024-12-11 14:30:45
+======================================================================
+
+Testing Tenable API connection...
+   ✓ Tenable API connection successful
+
+Checking 1 CVE(s)...
+
+[1/1] Checking CVE-2025-62215...
+   [DEBUG] Calling: POST https://cloud.tenable.com/vulns/export
+   [DEBUG] Payload: {
+     "num_assets": 5000,
+     "filters": {
+       "cve_id": ["CVE-2025-62215"]
+     }
+   }
+   [DEBUG] Response status: 200
+   [DEBUG] Export UUID: 174e200e-943e-4712-b3b2-2d59b4f540b6
+   [DEBUG] Polling status...
+   [DEBUG] Attempt 1/30: Status = FINISHED
+   [DEBUG] Chunks available: 1
+   [DEBUG] Chunk response status: 200
+   [DEBUG] Vulnerabilities found: 1
+   [DEBUG] First vuln keys: ['asset', 'output', 'plugin', 'port', ...]
+   [DEBUG] Unique assets found: 1
+
+[... detailed debug output ...]
+Tips for Presentations
+
+Use Clean Mode - Default output is designed for executive consumption
+Screenshot Ready - Color-coded output is clear in screenshots
+Executive Summary - When checking multiple CVEs, lead with the summary
+Action Items Clear - "ACTION REQUIRED" makes priorities obvious
+Asset Counts - Provides scope for prioritization
+
+Integration with Daily Reports
+The tenable_checker.py script runs the full daily check with all CVEs from Hyperion. Use quick_check.py for:
+
+Ad-hoc requests
+Urgent CVE announcements
+Verification after patching
+Leadership inquiries
+
+Troubleshooting
+Connection Issues
+bash
+python quick_check.py CVE-2024-1234 --debug
+Check the debug output for API connection errors, verify .env configuration.
+No Results Found (But Should Be)
+
+Verify CVE format: CVE-YYYY-NNNNN
+Check if CVE is in Tenable scan results (may need to scan first)
+Use debug mode to see API response
+
+Rate Limiting
+If checking many CVEs, add small delays between runs or use the main tenable_checker.py for bulk operations.
+Best Practices
+
+Regular Updates - Keep Hyperion data fresh to ensure accurate checks
+Document Checks - Save output when responding to leadership requests
+Combine with Context - Use alongside CVSS scores and exploit maturity data
+Follow Up - After patching, re-run to verify remediation
+
+Support
+For issues or questions:
+
+Check debug output first
+Review Tenable API documentation
+Verify API keys and permissions
+Consult Hyperion CTI GitHub repository

@@ -3,6 +3,8 @@ Hyperion CTI - Tenable Integration Script
 Fetches CVEs from your dashboard, checks Tenable for affected assets,
 generates Excel report, and posts to Microsoft Teams.
 
+FIXED VERSION - Corrects the CVE filtering to use proper Tenable API syntax
+
 Requirements:
 pip install requests openpyxl python-dotenv pandas
 """
@@ -33,59 +35,31 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'reports')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 class TenableCVEChecker:
-    def __init__(self):
+    def __init__(self, debug=False):
         self.headers = {
             "X-ApiKeys": f"accessKey={TENABLE_ACCESS_KEY}; secretKey={TENABLE_SECRET_KEY}",
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
         self.base_url = "https://cloud.tenable.com"
-        self.use_plugins_endpoint = False  # Flag to switch API approach
+        self.debug = debug  # Toggle debug output
     
     def test_tenable_connection(self):
-        """Test Tenable API connection and determine best endpoint"""
+        """Test Tenable API connection"""
         print("\n[TEST] Testing Tenable API connection...")
         
-        # Test 1: Basic connectivity
         try:
             test_url = f"{self.base_url}/scans"
             response = requests.get(test_url, headers=self.headers, timeout=10)
             if response.status_code == 200:
                 print("   ✓ Tenable API connection successful")
+                return True
             else:
                 print(f"   ⚠ Tenable API returned status: {response.status_code}")
                 return False
         except Exception as e:
             print(f"   ✗ Cannot connect to Tenable: {e}")
             return False
-        
-        # Test 2: Try to find a known CVE
-        print("   Testing CVE lookup methods...")
-        test_cve = "CVE-2024-0001"  # Use a recent CVE
-        
-        # Method 1: Workbenches API
-        try:
-            url = f"{self.base_url}/workbenches/vulnerabilities/{test_cve}/info"
-            response = requests.get(url, headers=self.headers, timeout=5)
-            if response.status_code in [200, 404]:
-                print(f"   ✓ Workbenches API works (status: {response.status_code})")
-                return True
-        except Exception as e:
-            print(f"   ⚠ Workbenches API error: {e}")
-        
-        # Method 2: Plugins API (alternative)
-        try:
-            url = f"{self.base_url}/plugins/plugin"
-            response = requests.get(url, headers=self.headers, timeout=5)
-            if response.status_code == 200:
-                print("   ✓ Plugins API works - will use this method")
-                self.use_plugins_endpoint = True
-                return True
-        except Exception as e:
-            print(f"   ⚠ Plugins API error: {e}")
-        
-        print("   ⚠ Could not determine best API method, will try both")
-        return True
     
     def fetch_hyperion_cves(self):
         """Fetch CVEs from Hyperion dashboard"""
@@ -148,173 +122,175 @@ class TenableCVEChecker:
             return []
     
     def check_cve_in_tenable(self, cve_id):
-        """Check if CVE affects any assets in Tenable"""
-        # Try primary method first (workbenches)
-        result = self._check_via_workbenches(cve_id)
-        
-        # If that fails, try alternative method (vulnerabilities export)
-        if result['details'] in ['Not found in Tenable', 'Empty response from Tenable', 'Invalid JSON response']:
-            alt_result = self._check_via_vulnerabilities(cve_id)
-            if alt_result['exploitable'] is not None:
-                return alt_result
-        
-        return result
+        """Check if CVE affects any assets in Tenable using the CORRECT export API"""
+        return self._check_via_vulns_export(cve_id)
     
-    def _check_via_workbenches(self, cve_id):
-        """Primary method: Check CVE via workbenches API"""
-        try:
-            # Remove any whitespace/formatting from CVE ID
-            cve_id = cve_id.strip().upper()
-            
-            url = f"{self.base_url}/workbenches/vulnerabilities/{cve_id}/info"
-            response = requests.get(url, headers=self.headers, timeout=10)
-            
-            if response.status_code == 404:
-                return {
-                    'exploitable': False,
-                    'affected_assets': 0,
-                    'severity': 'N/A',
-                    'details': 'Not found in Tenable'
-                }
-            
-            if response.status_code != 200:
-                return {
-                    'exploitable': False,
-                    'affected_assets': 0,
-                    'severity': 'N/A',
-                    'details': f'HTTP {response.status_code}'
-                }
-            
-            if not response.text or response.text.strip() == '':
-                return {
-                    'exploitable': False,
-                    'affected_assets': 0,
-                    'severity': 'N/A',
-                    'details': 'Not in Tenable scan results'
-                }
-            
-            try:
-                vuln_info = response.json()
-            except ValueError:
-                return {
-                    'exploitable': False,
-                    'affected_assets': 0,
-                    'severity': 'N/A',
-                    'details': 'Invalid JSON response'
-                }
-            
-            # ENHANCED: Better asset count detection
-            asset_count = 0
-            severity = 'N/A'
-            
-            # Try multiple data paths (Tenable API structure varies)
-            if 'info' in vuln_info:
-                asset_count = vuln_info['info'].get('count', 0)
-                severity = vuln_info['info'].get('severity', 'N/A')
-            elif 'count' in vuln_info:
-                asset_count = vuln_info.get('count', 0)
-                severity = vuln_info.get('severity', 'N/A')
-            elif 'total' in vuln_info:
-                asset_count = vuln_info.get('total', 0)
-                severity = vuln_info.get('severity', 'N/A')
-            
-            # Additional check: look for assets array
-            if asset_count == 0 and 'assets' in vuln_info:
-                asset_count = len(vuln_info.get('assets', []))
-            
-            # Debug logging for CVE-2025-62215
-            if cve_id == 'CVE-2025-62215':
-                print(f"\n   [DEBUG] {cve_id} Response: {json.dumps(vuln_info, indent=2)[:500]}\n")
-            
-            return {
-                'exploitable': asset_count > 0,
-                'affected_assets': asset_count,
-                'severity': severity,
-                'details': f"{asset_count} asset(s) affected" if asset_count > 0 else "No assets affected"
-            }
-            
-        except requests.exceptions.Timeout:
-            return {'exploitable': None, 'affected_assets': 'Timeout', 'severity': 'N/A', 'details': 'Request timed out'}
-        except requests.exceptions.ConnectionError:
-            return {'exploitable': None, 'affected_assets': 'Error', 'severity': 'N/A', 'details': 'Connection error'}
-        except Exception as e:
-            return {'exploitable': None, 'affected_assets': 'Error', 'severity': 'N/A', 'details': f'Error: {str(e)[:50]}'}
-    
-    def _check_via_vulnerabilities(self, cve_id):
-        """Alternative method: Check CVE via vulnerabilities search"""
+    def _check_via_vulns_export(self, cve_id):
+        """
+        CORRECT METHOD: Check CVE via vulns export API
+        
+        The proper filter syntax is: "cve_id": ["CVE-XXXX-XXXXX"]
+        NOT "plugin.attributes.cve" or "cve.id"
+        
+        Reference: https://developer.tenable.com/changelog/vm-vulnerability-intelligence-filters-in-vulnerability-exports
+        """
         try:
             # Clean CVE ID
             cve_id = cve_id.strip().upper()
             
-            # Method 1: Try direct vulnerability search with CVE filter
-            url = f"{self.base_url}/workbenches/vulnerabilities"
-            params = {
-                'filter.0.filter': 'cve.id',
-                'filter.0.quality': 'eq',
-                'filter.0.value': cve_id
-            }
+            # Use POST /vulns/export with CORRECT filter syntax
+            url = f"{self.base_url}/vulns/export"
             
-            response = requests.get(url, headers=self.headers, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    vulnerabilities = data.get('vulnerabilities', [])
-                    
-                    if vulnerabilities:
-                        total_count = sum(v.get('count', 0) for v in vulnerabilities)
-                        severity = vulnerabilities[0].get('severity', 'N/A') if vulnerabilities else 'N/A'
-                        
-                        if total_count > 0:
-                            return {
-                                'exploitable': True,
-                                'affected_assets': total_count,
-                                'severity': severity,
-                                'details': f"{total_count} asset(s) affected (via search)"
-                            }
-                except ValueError:
-                    pass
-            
-            # Method 2: Try plugin-based search (some CVEs map to plugins)
-            try:
-                plugin_url = f"{self.base_url}/workbenches/assets/vulnerabilities"
-                plugin_params = {
-                    'filter.search_type': 'and',
-                    'filter.0.filter': 'cve',
-                    'filter.0.quality': 'eq',
-                    'filter.0.value': cve_id
+            # FIXED: Correct filter property name is "cve_id" not "plugin.attributes.cve"
+            payload = {
+                "num_assets": 5000,
+                "filters": {
+                    "cve_id": [cve_id]  # This is the correct property name
                 }
-                
-                plugin_response = requests.get(plugin_url, headers=self.headers, params=plugin_params, timeout=10)
-                
-                if plugin_response.status_code == 200:
-                    plugin_data = plugin_response.json()
-                    
-                    if 'vulnerabilities' in plugin_data and plugin_data['vulnerabilities']:
-                        asset_count = len(plugin_data['vulnerabilities'])
-                        return {
-                            'exploitable': True,
-                            'affected_assets': asset_count,
-                            'severity': 'N/A',
-                            'details': f"{asset_count} asset(s) found (plugin search)"
-                        }
-            except:
-                pass
-            
-            # No results from any method
-            return {
-                'exploitable': False,
-                'affected_assets': 0,
-                'severity': 'N/A',
-                'details': 'Not in scan results'
             }
+            
+            if self.debug:
+                print(f"   [DEBUG] Calling: POST {url}")
+                print(f"   [DEBUG] Payload: {json.dumps(payload, indent=2)}")
+            
+            response = requests.post(url, headers=self.headers, json=payload, timeout=15)
+            
+            if self.debug:
+                print(f"   [DEBUG] Response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                if self.debug:
+                    print(f"   [DEBUG] Response body: {response.text[:500]}")
+                return {
+                    'exploitable': False,
+                    'affected_assets': 0,
+                    'severity': 'N/A',
+                    'details': f'Export failed with HTTP {response.status_code}'
+                }
+            
+            export_data = response.json()
+            export_uuid = export_data.get('export_uuid')
+            
+            if self.debug:
+                print(f"   [DEBUG] Export UUID: {export_uuid}")
+            
+            if not export_uuid:
+                return {
+                    'exploitable': False,
+                    'affected_assets': 0,
+                    'severity': 'N/A',
+                    'details': 'No export UUID returned'
+                }
+            
+            # Poll for export status (max 30 seconds)
+            status_url = f"{self.base_url}/vulns/export/{export_uuid}/status"
+            
+            if self.debug:
+                print(f"   [DEBUG] Polling status...")
+            
+            for attempt in range(30):
+                time.sleep(1)
+                status_response = requests.get(status_url, headers=self.headers, timeout=10)
                 
-        except Exception as e:
+                if status_response.status_code == 200:
+                    status_data = status_response.json()
+                    status = status_data.get('status')
+                    
+                    if self.debug:
+                        print(f"   [DEBUG] Attempt {attempt + 1}/30: Status = {status}")
+                    
+                    if status == 'FINISHED':
+                        # Get the chunks
+                        chunks_available = status_data.get('chunks_available', [])
+                        
+                        if self.debug:
+                            print(f"   [DEBUG] Chunks available: {len(chunks_available)}")
+                        
+                        if not chunks_available:
+                            return {
+                                'exploitable': False,
+                                'affected_assets': 0,
+                                'severity': 'N/A',
+                                'details': 'Export completed but no data chunks'
+                            }
+                        
+                        # Download first chunk to get asset count
+                        chunk_url = f"{self.base_url}/vulns/export/{export_uuid}/chunks/{chunks_available[0]}"
+                        chunk_response = requests.get(chunk_url, headers=self.headers, timeout=10)
+                        
+                        if self.debug:
+                            print(f"   [DEBUG] Chunk response status: {chunk_response.status_code}")
+                        
+                        if chunk_response.status_code == 200:
+                            try:
+                                vulns = chunk_response.json()
+                                
+                                if self.debug:
+                                    print(f"   [DEBUG] Vulnerabilities found: {len(vulns)}")
+                                
+                                if not vulns:
+                                    return {
+                                        'exploitable': False,
+                                        'affected_assets': 0,
+                                        'severity': 'N/A',
+                                        'details': 'No vulnerabilities in export'
+                                    }
+                                
+                                # Debug: Print first vuln structure
+                                if self.debug and vulns:
+                                    print(f"   [DEBUG] First vuln keys: {list(vulns[0].keys())}")
+                                
+                                # Count unique assets
+                                unique_assets = set()
+                                severities = []
+                                
+                                for vuln in vulns:
+                                    if 'asset' in vuln and 'uuid' in vuln['asset']:
+                                        unique_assets.add(vuln['asset']['uuid'])
+                                    
+                                    if 'severity' in vuln:
+                                        severities.append(vuln['severity'])
+                                
+                                asset_count = len(unique_assets)
+                                severity = severities[0] if severities else 'N/A'
+                                
+                                if self.debug:
+                                    print(f"   [DEBUG] Unique assets found: {asset_count}")
+                                
+                                return {
+                                    'exploitable': asset_count > 0,
+                                    'affected_assets': asset_count,
+                                    'severity': severity,
+                                    'details': f"{asset_count} asset(s) affected"
+                                }
+                            except ValueError as e:
+                                if self.debug:
+                                    print(f"   [DEBUG] JSON parse error: {e}")
+                                return {
+                                    'exploitable': False,
+                                    'affected_assets': 0,
+                                    'severity': 'N/A',
+                                    'details': 'Failed to parse chunk data'
+                                }
+                        
+                        break
+            
+            # Timeout waiting for export
             return {
                 'exploitable': None,
-                'affected_assets': 0,
+                'affected_assets': 'Timeout',
                 'severity': 'N/A',
-                'details': f'Search error: {str(e)[:30]}'
+                'details': 'Export status timeout after 30s'
+            }
+            
+        except Exception as e:
+            if self.debug:
+                print(f"   [DEBUG] Exception: {type(e).__name__}: {str(e)}")
+            return {
+                'exploitable': None,
+                'affected_assets': 'Error',
+                'severity': 'N/A',
+                'details': f'Export error: {str(e)[:30]}'
             }
     
     def generate_report(self, cve_results):
@@ -358,7 +334,7 @@ class TenableCVEChecker:
             if tenable['exploitable']:
                 exploitable_count += 1
             
-            # ENHANCED: Calculate severity from CVSS score
+            # Calculate severity from CVSS score
             cvss_str = str(result['cvss'])
             severity = self._calculate_severity_from_cvss(cvss_str)
             
@@ -366,7 +342,7 @@ class TenableCVEChecker:
                 result['cve'],
                 result['product'],
                 result['cvss'],
-                severity,  # Now calculated from CVSS
+                severity,
                 result['date'],
                 result['source'],
                 is_exploitable,
@@ -447,9 +423,6 @@ class TenableCVEChecker:
         
         print("[4/5] Posting to Microsoft Teams...")
         
-        # Read file for upload (Teams doesn't support direct file uploads via webhooks)
-        # We'll post a summary message with a link to where the file is stored
-        
         timestamp = datetime.now().strftime('%B %d, %Y at %I:%M %p')
         
         # Adaptive card for Teams
@@ -486,7 +459,7 @@ class TenableCVEChecker:
     def run_daily_check(self):
         """Main execution flow"""
         print("=" * 60)
-        print("Hyperion CTI - Tenable Integration Script")
+        print("Hyperion CTI - Tenable Integration Script (FIXED)")
         print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("=" * 60)
         
