@@ -68,6 +68,111 @@ export default function App() {
   const uniqueTypes = ['All', ...new Set(data.threats.map(t => t.type))];
   const uniqueSources = ['All', ...new Set(data.threats.map(t => t.source))];
 
+  /**
+   * Clean product name for display
+   * Handles long vendor+product strings, version numbers, and unclear products
+   */
+  const cleanProductName = (product: string, maxLength: number = 35): string => {
+    if (!product) return 'Unknown';
+    
+    let cleaned = product.trim();
+    
+    // Remove common noise patterns
+    cleaned = cleaned
+      .replace(/\(all versions?\)/gi, '')
+      .replace(/\(multiple versions?\)/gi, '')
+      .replace(/versions? \d+[\d\.\-,\s]*/gi, '')
+      .replace(/\s+\d+\.\d+[\d\.\-]*\s*(through|to|-)\s*\d+\.\d+[\d\.\-]*/gi, '')
+      .trim();
+    
+    // Extract vendor + product patterns
+    const vendorPatterns = [
+      /^(Microsoft|Apple|Google|Adobe|Oracle|Cisco|VMware|Linux|RedHat|Ubuntu|Debian|CentOS)\s+(.+)/i,
+      /^(Windows|Exchange|SharePoint|Office|Outlook)\s+(.+)/i
+    ];
+    
+    for (const pattern of vendorPatterns) {
+      const match = cleaned.match(pattern);
+      if (match) {
+        cleaned = `${match[1]} ${match[2]}`;
+        break;
+      }
+    }
+    
+    // Remove redundant software/feature/component keywords at the end
+    cleaned = cleaned
+      .replace(/\s+(Software|Feature|Component|Service|Product|Application)$/i, '')
+      .trim();
+    
+    // If still too long, intelligent truncation
+    if (cleaned.length > maxLength) {
+      // Try to truncate at word boundary
+      const words = cleaned.split(' ');
+      let truncated = '';
+      
+      for (const word of words) {
+        if ((truncated + ' ' + word).length <= maxLength - 3) {
+          truncated += (truncated ? ' ' : '') + word;
+        } else {
+          break;
+        }
+      }
+      
+      cleaned = truncated + '...';
+    }
+    
+    // Final cleanup
+    cleaned = cleaned
+      .replace(/\s+/g, ' ')
+      .replace(/\s+\.\.\./g, '...')
+      .trim();
+    
+    return cleaned || 'Multiple Products';
+  };
+
+  /**
+   * Get attack vector from CVE description/summary if product is unclear
+   * This is a fallback when product name is too generic
+   */
+  const getAttackVector = (product: string): string | null => {
+    const generic = /^(n\/a|multiple|various|unknown|unspecified)/i;
+    
+    if (generic.test(product)) {
+      // Common attack vectors to display
+      const vectors = [
+        'Remote Code Execution',
+        'Privilege Escalation', 
+        'Authentication Bypass',
+        'SQL Injection',
+        'Cross-Site Scripting',
+        'Directory Traversal',
+        'Buffer Overflow',
+        'Information Disclosure'
+      ];
+      
+      // In production, you'd extract this from CVE description
+      // For now, return a placeholder
+      return 'See CVE Details';
+    }
+    
+    return null;
+  };
+
+  /**
+   * Enhanced product display - shows cleaned name or attack vector
+   */
+  const getProductDisplay = (product: string): string => {
+    const cleaned = cleanProductName(product);
+    
+    // If product is still generic after cleaning, try attack vector
+    if (cleaned === 'Multiple Products' || cleaned === 'Unknown') {
+      const vector = getAttackVector(product);
+      if (vector) return vector;
+    }
+    
+    return cleaned;
+  };
+
   // Apply all filters and sort by date (before pagination)
   const allFilteredThreats = data.threats
     .filter(t => {
@@ -467,22 +572,27 @@ export default function App() {
           )}
         </div>
 
-        {/* Zero-Days CVE Section */}
+        {/* Known Exploited Vulnerabilities Section - RENAMED */}
         <div>
-          <div className="flex justify-between items-center mb-4">
-            <div className="flex items-center gap-2">
-              <h2 className="text-2xl">Exploited Zero-Days</h2>
-              {isRefreshing && (
-                <span className="px-2 py-1 bg-cyan-500/20 text-cyan-400 text-xs rounded-full animate-pulse">
-                  Updating...
+          <div className="flex flex-col mb-4">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <h2 className="text-2xl">Known Exploited Vulnerabilities</h2>
+                {isRefreshing && (
+                  <span className="px-2 py-1 bg-cyan-500/20 text-cyan-400 text-xs rounded-full animate-pulse">
+                    Updating...
+                  </span>
+                )}
+              </div>
+              {!loading && (
+                <span className="text-sm text-gray-400">
+                  {data.zeroDays.length} total CVEs
                 </span>
               )}
             </div>
-            {!loading && (
-              <span className="text-sm text-gray-400">
-                {data.zeroDays.length} total CVEs
-              </span>
-            )}
+            <p className="text-xs text-gray-500 mt-1">
+              Actively exploited vulnerabilities from CISA KEV and threat intelligence sources
+            </p>
           </div>
           
           <div className="overflow-x-auto">
@@ -515,7 +625,9 @@ export default function App() {
                           {z.cve}
                         </a>
                       </td>
-                      <td className="p-2">{z.product}</td>
+                      <td className="p-2" title={z.product}>
+                        {getProductDisplay(z.product)}
+                      </td>
                       <td className="p-2">
                         {z.cvssScore ? (
                           <span className={`px-2 py-0.5 rounded text-xs font-semibold ${
