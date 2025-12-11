@@ -1,0 +1,266 @@
+Hyperion CTI - Tenable Integration Setup Guide
+📋 What This Does
+Automatically checks your Hyperion dashboard CVEs against your Tenable environment and generates daily reports showing which CVEs actually affect your assets.
+Output: Excel report with "Exploitable?" column + automatic Teams notification
+
+🔧 Step 1: Install Python (if not already installed)
+
+Download Python from: https://www.python.org/downloads/
+IMPORTANT: Check "Add Python to PATH" during installation!
+Verify installation:
+
+bashpython --version
+Should show: Python 3.x.x
+
+📦 Step 2: Install Python Dependencies
+Option A: Using the batch file (easiest)
+bashcd C:\path\to\hyperion-cti\scripts
+install_dependencies.bat
+Option B: Manual installation
+bashcd C:\path\to\hyperion-cti\scripts
+pip install -r requirements.txt
+Option C: One-by-one
+bashpip install requests openpyxl python-dotenv pandas
+
+🔑 Step 3: Update Your .env File
+Your existing .env file already has backend keys. Just add Tenable keys:
+env# ============================================
+# Hyperion CTI - Combined Configuration File
+# ============================================
+
+# --------------------------------------------
+# Backend API Keys (for Netlify Functions)
+# --------------------------------------------
+OTX_API_KEY=your-existing-otx-key
+VT_API_KEY=your-existing-vt-key
+ABUSEIPDB_API_KEY=your-existing-abuseipdb-key
+NVD_API_KEY=your-existing-nvd-key
+
+# --------------------------------------------
+# Tenable Integration (ADD THESE)
+# --------------------------------------------
+TENABLE_ACCESS_KEY=your-tenable-access-key-here
+TENABLE_SECRET_KEY=your-tenable-secret-key-here
+
+# --------------------------------------------
+# Microsoft Teams (Optional)
+# --------------------------------------------
+TEAMS_WEBHOOK_URL=none
+
+# --------------------------------------------
+# Hyperion Data Source
+# --------------------------------------------
+HYPERION_FUNCTION_URL=https://hyperion-cti.netlify.app/.netlify/functions/get-threats
+How to Get Tenable Keys:
+
+Log into Tenable.io → https://cloud.tenable.com
+Profile icon (top right) → My Account
+API Keys tab → Generate
+Copy both Access Key and Secret Key
+Paste into .env file
+
+
+🚀 Step 4: Test the Script
+Manual Test Run:
+bashcd C:\path\to\hyperion-cti\scripts
+python tenable_checker.py
+Using Batch File:
+bashcd C:\path\to\hyperion-cti\scripts
+run_daily_check.bat
+Expected Output:
+============================================================
+Hyperion CTI - Tenable Integration Script
+Started: 2025-01-06 09:00:00
+============================================================
+[1/5] Fetching CVEs from Hyperion dashboard...
+   Endpoint: https://hyperion-cti.netlify.app/.netlify/functions/get-threats
+   ✓ Found 25 CVEs from Hyperion
+
+[2/5] Checking 25 CVEs in Tenable...
+   Checking CVE-2025-1234 (1/25)... ✓ Exploitable
+   Checking CVE-2025-5678 (2/25)... ○ Not found
+   ...
+
+[3/5] Generating Excel report...
+   ✓ Report saved: C:\hyperion-cti\reports\CVE_Report_2025-01-06_0900.xlsx
+
+[4/5] Skipping Teams notification (webhook not configured)
+
+[5/5] Summary:
+   Total CVEs analyzed: 25
+   🚨 Exploitable in our environment: 3
+   ⚠️  High priority: 3
+   📄 Report: C:\hyperion-cti\reports\CVE_Report_2025-01-06_0900.xlsx
+
+============================================================
+✓ Daily check complete!
+============================================================
+
+📊 Data Source Options
+The script now supports TWO ways to get CVE data:
+Option 1: Live Netlify Function (Recommended)
+envHYPERION_FUNCTION_URL=https://hyperion-cti.netlify.app/.netlify/functions/get-threats
+Pros:
+
+✅ Always up-to-date
+✅ No manual exports needed
+✅ Automatic refresh
+
+Cons:
+
+⚠️ Requires internet connection
+⚠️ Depends on Netlify function being up
+
+Option 2: Local CSV Export (Fallback)
+
+Export CVEs from your dashboard (add export button)
+Save as cve_export.csv
+Set path in .env:
+
+envHYPERION_CSV_PATH=C:\hyperion-cti\cve_export.csv
+CSV Format:
+csvCVE ID,Product,CVSS Score,Date Added,Source
+CVE-2025-1234,Microsoft Windows,9.8,2025-01-05,CISA KEV
+CVE-2025-5678,Apache Tomcat,7.5,2025-01-04,NVD
+
+⏰ Step 5: Schedule Daily Automation
+Windows Task Scheduler Setup:
+
+Open Task Scheduler (Win + R → taskschd.msc)
+Create Basic Task
+Name: Hyperion Daily CVE Check
+Trigger: Daily at 8:00 AM
+Action: Start a program
+
+Program: C:\hyperion-cti\scripts\run_daily_check.bat
+Start in: C:\hyperion-cti\scripts
+
+
+Click Finish
+
+Advanced Settings:
+Right-click task → Properties:
+
+General: Run whether user is logged on or not
+Triggers: Run daily at 8:00 AM
+Actions: Start run_daily_check.bat
+Conditions: Uncheck "Start only if on AC power"
+Settings:
+
+✅ "If task fails, restart every 10 minutes"
+✅ "Stop task if it runs longer than 1 hour"
+
+
+
+
+🐛 Troubleshooting
+Import Errors (requests, openpyxl, etc.)
+Problem:
+Import "requests" could not be resolved from source
+Solution:
+bashcd C:\hyperion-cti\scripts
+install_dependencies.bat
+If that fails, try:
+bashpython -m pip install --upgrade pip
+pip install requests openpyxl python-dotenv pandas
+Still having issues? Check which Python VSCode is using:
+
+Ctrl+Shift+P → "Python: Select Interpreter"
+Choose the Python where you installed packages
+
+
+Error: "Tenable API keys not configured"
+Problem: Script can't find your Tenable keys
+Solution:
+
+Check .env file is in project root (not in scripts\)
+Keys should NOT have quotes: ✅ TENABLE_ACCESS_KEY=abc123
+No spaces around = sign
+Make sure keys are actually there (not just placeholder text)
+
+
+Error: "No CVEs to process"
+Problem: Can't fetch data from Netlify function
+Solutions:
+
+Test the URL manually:
+
+Open browser
+Go to: https://hyperion-cti.netlify.app/.netlify/functions/get-threats
+Should see JSON data with zeroDays array
+
+
+If URL doesn't work:
+
+Use CSV export method instead
+Add export button to your dashboard
+Set HYPERION_CSV_PATH in .env
+
+
+Check firewall/network:
+
+Make sure Python can access internet
+Try: ping hyperion-cti.netlify.app
+
+
+
+
+Script Runs But No Report Generated
+Solution:
+
+Check reports\ folder was created
+Run Command Prompt as Administrator
+Check disk space (reports can be 100KB each)
+Verify write permissions on folder
+
+
+Excel File Won't Open
+Problem: "File is corrupted" error
+Solution:
+
+Update Python: python -m pip install --upgrade openpyxl
+Try different Excel version (Excel vs Excel Online)
+Open with Google Sheets as alternative
+
+
+✅ Delivered:
+
+Custom CTI platform (dashboard)
+Automated Tenable integration
+Daily CVE reports with exploitability status
+Excel exports for manual review
+
+⏸️ Pending:
+
+Teams webhook (needs IT approval)
+Data breach intelligence (requires scoping)
+
+💰 Commercial Value:
+
+CTI Platform: $50k-100k/year
+Vulnerability Management Integration: $30k-50k/year
+Total: $80k-150k/year equivalent
+
+Keep reports organized:
+
+bash   reports\
+   ├── 2025-01\
+   ├── 2025-02\
+   └── archive\
+
+Track trends:
+
+Compare exploitable count week-over-week
+Identify which CVEs appear most in your environment
+
+
+Share network folder:
+
+Map reports\ folder to network drive
+Team can access reports without email
+
+
+Add to runbook:
+
+Document where reports are saved
+Add to incident response procedures
