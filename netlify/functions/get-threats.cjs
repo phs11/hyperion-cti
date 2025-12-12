@@ -29,8 +29,61 @@ if (!OTX_KEY) {
 }
 
 // ========================================
-// ENHANCED: Product Name Extraction
+// ENHANCED: Product Name Extraction with Cleaning
 // ========================================
+function cleanProductName(product, maxLength = 35) {
+  if (!product) return 'Unknown';
+  
+  let cleaned = product.trim();
+  
+  // Remove common noise patterns
+  cleaned = cleaned
+    .replace(/\(all versions?\)/gi, '')
+    .replace(/\(multiple versions?\)/gi, '')
+    .replace(/versions? \d+[\d\.\-,\s]*/gi, '')
+    .replace(/\s+\d+\.\d+[\d\.\-]*\s*(through|to|-)\s*\d+\.\d+[\d\.\-]*/gi, '')
+    .replace(/\s+(Software|Feature|Component|Service|Product|Application)$/i, '')
+    .trim();
+  
+  // Extract vendor + product patterns
+  const vendorPatterns = [
+    /^(Microsoft|Apple|Google|Adobe|Oracle|Cisco|VMware|Linux|RedHat|Ubuntu|Debian|CentOS)\s+(.+)/i,
+    /^(Windows|Exchange|SharePoint|Office|Outlook|Chrome|Firefox|Safari)\s+(.+)/i
+  ];
+  
+  for (const pattern of vendorPatterns) {
+    const match = cleaned.match(pattern);
+    if (match) {
+      cleaned = `${match[1]} ${match[2]}`;
+      break;
+    }
+  }
+  
+  // If still too long, intelligent truncation at word boundary
+  if (cleaned.length > maxLength) {
+    const words = cleaned.split(' ');
+    let truncated = '';
+    
+    for (const word of words) {
+      if ((truncated + ' ' + word).length <= maxLength - 3) {
+        truncated += (truncated ? ' ' : '') + word;
+      } else {
+        break;
+      }
+    }
+    
+    cleaned = truncated ? truncated + '...' : cleaned.substring(0, maxLength - 3) + '...';
+  }
+  
+  // Final cleanup
+  cleaned = cleaned
+    .replace(/\s+/g, ' ')
+    .replace(/\s+\.\.\./g, '...')
+    .trim();
+  
+  return cleaned || 'Multiple Products';
+}
+
 function extractProductFromDescription(description, cveId = '') {
   if (!description) return 'Unknown';
   
@@ -48,34 +101,50 @@ function extractProductFromDescription(description, cveId = '') {
     const product = vendorProductMatch[1].trim();
     // Filter out generic words
     if (!['Application', 'Software', 'System', 'Service'].includes(product.split(' ')[0])) {
-      return product;
+      return cleanProductName(product);
     }
   }
   
   // Pattern 2: "product_name version" (e.g., "linux kernel", "wordpress")
   const productVersionMatch = cleaned.match(/^([a-z][a-z0-9_-]+)\s+(?:version\s+)?[\d.]+/i);
   if (productVersionMatch) {
-    return productVersionMatch[1].split(/[-_]/).map(w => 
+    const productName = productVersionMatch[1].split(/[-_]/).map(w => 
       w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
     ).join(' ');
+    return cleanProductName(productName);
   }
   
   // Pattern 3: First capitalized word or phrase (up to 3 words)
   const capitalizedMatch = cleaned.match(/^([A-Z][a-zA-Z0-9]*(?:\s+[A-Z][a-zA-Z0-9]*){0,2})/);
   if (capitalizedMatch) {
-    return capitalizedMatch[1].trim();
+    return cleanProductName(capitalizedMatch[1].trim());
   }
   
   // Pattern 4: Look for product names after common indicators
   const indicatorMatch = cleaned.match(/(?:in|for|affecting)\s+([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)?)/i);
   if (indicatorMatch) {
-    return indicatorMatch[1].trim();
+    return cleanProductName(indicatorMatch[1].trim());
+  }
+  
+  // Pattern 5: Check for common product keywords
+  const productKeywords = ['Windows', 'Linux', 'Apache', 'Chrome', 'Firefox', 'Safari', 'Exchange', 'Office'];
+  for (const keyword of productKeywords) {
+    if (cleaned.toLowerCase().includes(keyword.toLowerCase())) {
+      const context = cleaned.substring(
+        Math.max(0, cleaned.toLowerCase().indexOf(keyword.toLowerCase()) - 20),
+        Math.min(cleaned.length, cleaned.toLowerCase().indexOf(keyword.toLowerCase()) + keyword.length + 20)
+      );
+      const match = context.match(new RegExp(`${keyword}[\\s\\w]*`, 'i'));
+      if (match) {
+        return cleanProductName(match[0].trim());
+      }
+    }
   }
   
   // Fallback: First word if it's capitalized
   const firstWord = cleaned.split(/\s+/)[0];
   if (firstWord && /^[A-Z]/.test(firstWord)) {
-    return firstWord;
+    return cleanProductName(firstWord);
   }
   
   return 'Unknown';
@@ -226,11 +295,6 @@ const MISP_FEEDS = [
 
 let cache = { threats: [], zeroDays: [], lastUpdate: 0, cvssCache: {} };
 const CACHE_TTL = 15 * 60 * 1000;
-
-// ========================================
-// REMOVED: IP Enrichment Functions (VT & AbuseIPDB)
-// No longer needed - saves significant API calls and time
-// ========================================
 
 function classifyThreat(item) {
   const text = `${item.title} ${item.contentSnippet || ''}`.toLowerCase();
@@ -399,7 +463,7 @@ async function fetchData() {
           
           const productMatch = cveContext.match(/(?:in|for|affecting)\s+([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+)?)/i);
           if (productMatch) {
-            product = productMatch[1].trim();
+            product = cleanProductName(productMatch[1].trim());
           } else {
             if (title.includes('Microsoft')) product = 'Microsoft';
             else if (title.includes('Google')) product = 'Google';
@@ -445,17 +509,17 @@ async function fetchData() {
   }
 
   // ========================================
-  // OPTIMIZED: CISA KEV with batched CVSS enrichment
+  // OPTIMIZED: CISA KEV with batched CVSS enrichment + CLEANED PRODUCTS
   // ========================================
   try {
     console.log('[CISA KEV] Fetching...');
     const kev = await axios.get('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', { timeout: 5000 });
     console.log(`[CISA KEV] Found ${kev.data.vulnerabilities.length} vulnerabilities`);
     
-    // Prepare CVEs without fetching scores yet
+    // Prepare CVEs with CLEANED product names
     const kevCVEs = kev.data.vulnerabilities.slice(0, 15).map(v => ({
       cve: v.cveID,
-      product: v.vendorProject,
+      product: cleanProductName(v.vendorProject), // APPLY CLEANING HERE
       dateAdded: v.dateAdded,
       source: 'CISA KEV',
       link: `https://nvd.nist.gov/vuln/detail/${v.cveID}`
@@ -470,7 +534,7 @@ async function fetchData() {
   }
 
   // ========================================
-  // ENHANCED: NVD with CVSS Scores
+  // ENHANCED: NVD with CVSS Scores + CLEANED PRODUCTS
   // ========================================
   try {
     console.log('[NVD] Fetching recent HIGH/CRITICAL CVEs...');
@@ -506,7 +570,7 @@ async function fetchData() {
         const cve = v.cve;
         const description = cve.descriptions?.find(d => d.lang === 'en')?.value || '';
         
-        // ENHANCED: Use new product extraction function
+        // ENHANCED: Use new product extraction function with cleaning
         const productName = extractProductFromDescription(description, cve.id);
         
         // ENHANCED: Extract CVSS score
@@ -528,7 +592,7 @@ async function fetchData() {
   }
 
   // ========================================
-  // OPTIMIZED: VulnCheck KEV with batched CVSS enrichment
+  // OPTIMIZED: VulnCheck KEV with batched CVSS enrichment + CLEANED PRODUCTS
   // ========================================
   try {
     console.log('[VulnCheck] Fetching KEV data...');
@@ -541,7 +605,7 @@ async function fetchData() {
       
       const vulnCheckCVEs = vulncheck.data.data.slice(0, 10).map(v => ({
         cve: v.cve || 'Unknown',
-        product: v.vendorProject || v.product || 'Unknown',
+        product: cleanProductName(v.vendorProject || v.product || 'Unknown'), // APPLY CLEANING HERE
         dateAdded: v.dateAdded?.split('T')[0] || 'Unknown',
         source: 'VulnCheck KEV',
         link: `https://nvd.nist.gov/vuln/detail/${v.cve}`
