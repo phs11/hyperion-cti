@@ -203,7 +203,6 @@ const RSS_FEEDS = [
   'https://www.wired.com/feed/category/security/latest/rss',
   'https://www.thehackernews.com/feeds/posts/default',
   'https://news.ycombinator.com/rss',
-  'https://feeds.arstechnica.com/arstechnica/index/',
   'https://threatpost.com/feed/',
   'https://krebsonsecurity.com/feed/',
   'https://www.bleepingcomputer.com/feed/',
